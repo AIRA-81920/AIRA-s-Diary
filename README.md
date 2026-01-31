@@ -1,4 +1,4 @@
-# 🌟 InspireFlow - AI灵感管理助手
+# 🌟 AIRA‘s Diary，一个目前不怎么聪明的灵感管理助手
 
 <div align="center">
 
