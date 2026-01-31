@@ -1,0 +1,128 @@
+=================================================================
+    InspireFlow - Quick Start Guide for Windows
+=================================================================
+
+STEP 1: Extract the ZIP file
+-----------------------------
+- Right-click "inspireflow-windows.zip"
+- Select "Extract All..." or "Extract Here"
+- Open the "inspireflow" folder
+
+
+STEP 2: Run the startup script
+-----------------------------
+- Double-click "start.bat"
+
+OR if double-click doesn't work:
+- Press Win+R
+- Type: cmd
+- Press Enter
+- Type: cd C:\path\to\inspireflow
+- Type: start.bat
+- Press Enter
+
+
+STEP 3: Configure API Key (First time only)
+-----------------------------
+The script will open Notepad automatically.
+
+In the .env file, find this line:
+DEEPSEEK_API_KEY=your_deepseek_api_key_here
+
+Replace it with your real API key:
+DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxx
+
+Save the file (Ctrl+S) and close Notepad.
+
+Run "start.bat" again.
+
+
+STEP 4: Wait for startup
+-----------------------------
+Two command windows will open:
+- Backend (Keep open)
+- Frontend (Keep open)
+
+Browser will open automatically at:
+http://localhost:3000
+
+
+=================================================================
+    How to Get DeepSeek API Key
+=================================================================
+
+1. Visit: https://platform.deepseek.com/
+2. Sign up / Log in
+3. Go to "API Keys"
+4. Click "Create API Key"
+5. Copy the key (starts with "sk-")
+6. Paste into backend\.env file
+
+
+=================================================================
+    Troubleshooting
+=================================================================
+
+Problem: "Node.js not found"
+Solution: Install Node.js from https://nodejs.org/
+
+Problem: "Port already in use"
+Solution: 
+- Open Task Manager (Ctrl+Shift+Esc)
+- Find "Node.js" processes
+- End them
+- Run start.bat again
+
+Problem: Still showing garbled text
+Solution: Use manual startup method below
+
+
+=================================================================
+    Manual Startup Method (If script doesn't work)
+=================================================================
+
+Step 1 - Backend:
+-----------------
+Open CMD and type:
+cd inspireflow\backend
+npm install
+copy .env.example .env
+notepad .env
+(Edit API key, save, close)
+npm start
+(Keep this window open)
+
+Step 2 - Frontend:
+-----------------
+Open a NEW CMD window and type:
+cd inspireflow\frontend
+npm install
+npm start
+(Browser will open automatically)
+
+
+=================================================================
+    Optional: Local Embedding Service (Free, Faster)
+=================================================================
+
+If you have Python installed:
+
+1. Double-click "start-embedding.bat"
+2. Wait for model download (first time, ~120MB)
+3. Keep the window open
+
+Then edit backend\.env and add:
+USE_LOCAL_EMBEDDING=true
+LOCAL_EMBEDDING_URL=http://localhost:5000
+
+
+=================================================================
+    Need Help?
+=================================================================
+
+Read the full documentation:
+- README.md - Complete guide
+- QUICKSTART.md - Quick tutorial
+- ARCHITECTURE.md - Technical details
+
+=================================================================
