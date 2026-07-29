@@ -1,0 +1,791 @@
+/* Tailwind 指令：引入 base、components、utilities 三层样式 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   全局美学系统 — "深空智识 (Cosmic Intellect)"
+   功能：定义深空蓝黑径向渐变背景、玻璃态卡片、衬线字体系统
+   实现方式：CSS 变量 + 原生 CSS + Tailwind 工具类协同
+   ============================================================ */
+
+:root {
+  /* 背景色板（dark 默认值，视觉与原状保持一致） */
+  --bg-base: #0a0e1a;
+  --bg-elevated: #11141f;
+  --bg-card: rgba(255, 255, 255, 0.03);
+  --bg-l2: rgba(255, 255, 255, 0.03);  /* 卡片层 */
+  --bg-l3: rgba(255, 255, 255, 0.05);  /* 小板块 */
+  --bg-l4: rgba(255, 255, 255, 0.08);  /* hover / 深嵌套 */
+
+  /* RGB 三元组：供 Tailwind <alpha-value> 与内联 style 使用
+     dark 下三者均为纯白（与原硬编码一致）；light 下统一翻转为墨色 */
+  --ink: 255 255 255;    /* 文字墨色 */
+  --veil: 255 255 255;   /* 背景叠层（light 下翻转为深色叠层 = 小板块变灰） */
+  --line: 255 255 255;   /* 边框 */
+
+  /* 深底容器（抽屉/弹窗/遮罩）：alpha 保留、色相随主题翻转 */
+  --deep-rgb: 10 14 26;
+  --deep2-rgb: 17 20 31;
+  --mask-rgb: 0 0 0;
+  --mask: rgba(0, 0, 0, 0.5);
+
+  /* 强调色 */
+  --accent-cyan: #06b6d4;
+  --accent-cyan-soft: rgba(6, 182, 212, 0.15);
+  --accent-amber: #f59e0b;
+  --accent-amber-soft: rgba(245, 158, 11, 0.15);
+  /* 强调色 RGB 三元组（供内联 rgba 光晕/渐变用） */
+  --cyan-rgb: 6 182 212;
+  --amber-rgb: 245 158 11;
+  --cyan-bright-rgb: 34 211 238;  /* cyan-400 亮青（徽章/多选标记光晕） */
+  --accent-cyan-bright: #22d3ee;  /* 亮青（徽章/链接文字） */
+  --accent-cyan-light: #67e8f9;   /* 浅青（选中文字/行内代码） */
+
+  /* 语义色（彩色 tint 底上的文字/图标，亮主题需加深） */
+  --sem-blue: #60a5fa;
+  --sem-purple: #c084fc;
+  --sem-red: #f87171;
+  --sem-gold: #fbbf24;
+
+  /* 文字色 */
+  --text-primary: rgba(255, 255, 255, 0.92);
+  --text-secondary: rgba(255, 255, 255, 0.6);
+  --text-tertiary: rgba(255, 255, 255, 0.4);
+
+  /* 边框与玻璃态 */
+  --border-glass: rgba(255, 255, 255, 0.08);
+  --border-glass-hover: rgba(255, 255, 255, 0.15);
+
+  /* 阴影与代码块 */
+  --shadow-card: none;
+  --shadow-modal: 0 25px 60px rgba(0, 0, 0, 0.5);
+  --code-bg: rgba(0, 0, 0, 0.35);
+}
+
+/* ============================================================
+   亮色主题覆盖（<html data-theme="light">）
+   原则：叠层逻辑翻转 —— 白色叠层变墨色叠层，深底变浅色实底
+   ============================================================ */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-base: #e6eaf1;
+  --bg-elevated: #eef1f6;
+  --bg-card: #ffffff;
+  --bg-l2: #ffffff;
+  --bg-l3: #f0f2f7;
+  --bg-l4: #e9edf4;
+
+  --ink: 27 36 56;
+  --veil: 27 36 56;
+  --line: 27 36 56;
+
+  --deep-rgb: 238 241 246;
+  --deep2-rgb: 241 244 248;
+  --mask-rgb: 27 36 56;
+  --mask: rgba(27, 36, 56, 0.35);
+
+  --accent-cyan: #0891b2;
+  --accent-cyan-soft: rgba(8, 145, 178, 0.15);
+  --accent-amber: #d97706;
+  --accent-amber-soft: rgba(217, 119, 6, 0.15);
+  --cyan-rgb: 8 145 178;
+  --amber-rgb: 217 119 6;
+  --cyan-bright-rgb: 8 145 178;
+  --accent-cyan-bright: #0891b2;
+  --accent-cyan-light: #0e7490;
+
+  --sem-blue: #2563eb;
+  --sem-purple: #9333ea;
+  --sem-red: #dc2626;
+  --sem-gold: #d97706;
+
+  --text-primary: rgba(27, 36, 56, 0.92);
+  --text-secondary: rgba(27, 36, 56, 0.6);
+  --text-tertiary: rgba(27, 36, 56, 0.4);
+
+  --border-glass: rgba(27, 36, 56, 0.1);
+  --border-glass-hover: rgba(27, 36, 56, 0.18);
+
+  --shadow-card: 0 2px 12px rgba(27, 36, 56, 0.08);
+  --shadow-modal: 0 8px 32px rgba(27, 36, 56, 0.12);
+  --code-bg: rgba(27, 36, 56, 0.06);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  /* 深空蓝黑径向渐变背景：多光斑营造思维星云氛围 */
+  background-color: var(--bg-base);
+  background-image:
+    radial-gradient(ellipse 80% 60% at 15% 0%, rgba(6, 182, 212, 0.08) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 50% at 85% 100%, rgba(245, 158, 11, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse 60% 80% at 50% 50%, rgba(30, 41, 59, 0.4) 0%, transparent 60%);
+  background-attachment: fixed;
+
+  /* 噪点纹理叠加（SVG data URI，增强质感） */
+  position: relative;
+}
+
+/* 亮色主题：冷灰渐变底 + 减淡的冷色光斑 */
+:root[data-theme='light'] body {
+  background-image:
+    radial-gradient(ellipse 80% 60% at 15% 0%, rgba(8, 145, 178, 0.06) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 50% at 85% 100%, rgba(217, 119, 6, 0.045) 0%, transparent 50%),
+    linear-gradient(160deg, #e6eaf1 0%, #dfe4ee 100%);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.4;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 0.04 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* 亮色主题：噪点翻转为深色低透明度颗粒 */
+:root[data-theme='light'] body::before {
+  opacity: 0.25;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3'/%3E%3CfeColorMatrix values='0 0 0 0 0.1 0 0 0 0 0.14 0 0 0 0 0.22 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+#root {
+  position: relative;
+  z-index: 1;
+}
+
+/* 亮色主题：根容器透明，露出 body 冷灰渐变与噪点（dark 保持不透明底色不变） */
+:root[data-theme='light'] .app-shell {
+  background: transparent !important;
+}
+
+body {
+  /* 字体：正文用 Manrope */
+  font-family: 'Manrope', ui-sans-serif, system-ui, sans-serif;
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 标题默认使用 Cormorant Garamond 衬线展示字 */
+h1,
+h2,
+h3,
+h4 {
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  letter-spacing: -0.01em;
+}
+
+/* ============================================================
+   玻璃态卡片工具类
+   功能：统一卡片视觉，backdrop-blur + 半透明 + 微边框
+   ============================================================ */
+@layer components {
+  .glass-card {
+    background: var(--bg-card);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--border-glass);
+    box-shadow: var(--shadow-card);
+    transition: border-color 0.25s ease, background 0.25s ease;
+  }
+
+  .glass-card:hover {
+    border-color: var(--border-glass-hover);
+  }
+
+  .glass-panel {
+    background: rgb(var(--deep-rgb) / 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+  }
+
+  /* 强调色按钮：青色光晕 */
+  .btn-accent {
+    background: linear-gradient(135deg, var(--accent-cyan) 0%, var(--accent-cyan-deep, #0891b2) 100%);
+    box-shadow: 0 0 0 1px rgb(var(--cyan-rgb) / 0.3), 0 4px 16px rgb(var(--cyan-rgb) / 0.2);
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .btn-accent:hover:not(:disabled) {
+    box-shadow: 0 0 0 1px rgb(var(--cyan-rgb) / 0.5), 0 6px 24px rgb(var(--cyan-rgb) / 0.35);
+    transform: translateY(-1px);
+  }
+
+  .btn-accent:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  /* 输入框聚焦：青色底边光晕 */
+  .input-accent {
+    background: rgb(var(--veil) / 0.03);
+    border: 1px solid var(--border-glass);
+    transition: all 0.25s ease;
+  }
+
+  .input-accent:focus {
+    outline: none;
+    border-color: rgb(var(--cyan-rgb) / 0.5);
+    box-shadow: 0 0 0 3px rgb(var(--cyan-rgb) / 0.1), inset 0 1px 0 rgb(var(--veil) / 0.05);
+  }
+}
+
+/* 亮色主题组件级覆盖（unlayered，优先级高于 @layer components） */
+:root[data-theme='light'] {
+  --accent-cyan-deep: #0e7490;
+}
+
+:root[data-theme='light'] .glass-card {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-theme='light'] .glass-panel {
+  background: rgb(var(--deep-rgb) / 0.85);
+}
+
+:root[data-theme='light'] .input-accent {
+  background: #ffffff;
+}
+
+/* ============================================================
+   动画工具类
+   ============================================================ */
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* 删除确认按钮中旋转的 X 图标：展开时一次性旋转 270° */
+.animate-spin-slow {
+  animation: spinSlow 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes spinSlow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(270deg); }
+}
+
+/* 删除确认浮窗收回时的淡出下移动画 */
+.animate-fade-out-down {
+  animation: fadeOutDown 0.25s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes fadeOutDown {
+  0% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* 流式 Markdown 渲染：末尾闪烁光标 */
+.streaming-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent-amber);
+  border-radius: 1px;
+  animation: streamingBlink 1s steps(2, start) infinite;
+}
+
+@keyframes streamingBlink {
+  0%, 50% { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* 流式 Markdown 容器：让子元素继承父级颜色 */
+.streaming-md {
+  color: inherit;
+}
+.streaming-md > *:first-child {
+  margin-top: 0;
+}
+.streaming-md > *:last-child {
+  margin-bottom: 0;
+}
+
+/* 流式 Markdown 链接色（dark=#22d3ee / hover #67e8f9，light 自动加深） */
+.streaming-link {
+  color: var(--accent-cyan-bright);
+}
+.streaming-link:hover {
+  color: var(--accent-cyan-light);
+}
+
+@keyframes fadeInUp {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================================
+   fix3 等待动画 keyframes（6 个语义化动画用）
+   功能：为 LoadingAnims.jsx 中的 6 个 SVG 动画提供循环 keyframes
+   命名约定：动画名 + 行为描述，避免与 Tailwind 内置冲突
+   ============================================================ */
+
+/* 通用：光晕脉冲（替代 animate-pulse-soft，给 AnimShell 光晕背景用） */
+@keyframes pulseSoft {
+  0%, 100% {
+    opacity: 0.6;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+
+/* 1. CrystalSensingAnim：扫描波从中心扩散 */
+@keyframes senseWave {
+  0% {
+    r: 4;
+    opacity: 1;
+  }
+  100% {
+    r: 22;
+    opacity: 0;
+  }
+}
+
+/* 2. CrystalQuestioningAnim：问号闪烁淡入淡出 */
+@keyframes blinkFade {
+  0%, 100% {
+    opacity: 0.2;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
+
+/* 2b. 问号下方文字线条：从短到长绘制 */
+@keyframes drawLine {
+  0% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scaleX(1);
+    opacity: 0.6;
+  }
+  100% {
+    transform: scaleX(0);
+    opacity: 0;
+  }
+}
+
+/* 3. CrystalGeneratingAnim：6 边形描边动画（dasharray 法） */
+@keyframes drawPolygon {
+  0% {
+    stroke-dasharray: 0 200;
+    stroke-dashoffset: 0;
+    opacity: 0.3;
+  }
+  50% {
+    stroke-dasharray: 200 0;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 200 0;
+    stroke-dashoffset: -200;
+    opacity: 0.3;
+  }
+}
+
+/* 3b. 辐射线：从中心向外伸展 */
+@keyframes radiateLine {
+  0% {
+    opacity: 0;
+    transform: scaleY(0);
+    transform-origin: 24px 24px;
+  }
+  50% {
+    opacity: 0.8;
+    transform: scaleY(1);
+    transform-origin: 24px 24px;
+  }
+  100% {
+    opacity: 0;
+    transform: scaleY(1);
+    transform-origin: 24px 24px;
+  }
+}
+
+/* 4. RootsSpreadAnim：根须生长（dasharray 法） */
+@keyframes growRoot {
+  0% {
+    stroke-dasharray: 0 60;
+    opacity: 0;
+  }
+  30% {
+    opacity: 1;
+  }
+  70% {
+    stroke-dasharray: 60 0;
+    opacity: 1;
+  }
+  100% {
+    stroke-dasharray: 60 0;
+    opacity: 0;
+  }
+}
+
+/* 5. ExcavateAnim：挖掘层级依次出现 */
+@keyframes excavateLayer {
+  0% {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  20% {
+    opacity: 0.6;
+    transform: translateY(0);
+  }
+  80% {
+    opacity: 0.6;
+    transform: translateY(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+/* 5b. 挖掘箭头：上下抖动 */
+@keyframes digArrow {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(4px);
+  }
+}
+
+/* 6. NodeLinkAnim：节点脉动 */
+@keyframes nodePulse {
+  0%, 100% {
+    opacity: 0.5;
+    transform: scale(1);
+    transform-origin: center;
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.3);
+    transform-origin: center;
+  }
+}
+
+/* 6b. 节点连线：从一端绘制到另一端 */
+@keyframes linkDraw {
+  0% {
+    stroke-dasharray: 0 50;
+    opacity: 0;
+  }
+  30% {
+    opacity: 0.6;
+  }
+  70% {
+    stroke-dasharray: 50 0;
+    opacity: 0.6;
+  }
+  100% {
+    stroke-dasharray: 50 0;
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   自定义滚动条：融入深空暗色主题
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.15);
+  border-radius: 4px;
+  border: 1px solid transparent;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(6, 182, 212, 0.3);
+}
+
+/* 亮色主题滚动条 */
+:root[data-theme='light'] ::-webkit-scrollbar-thumb {
+  background-color: rgba(27, 36, 56, 0.18);
+}
+
+:root[data-theme='light'] ::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(8, 145, 178, 0.35);
+}
+
+/* 选中文本高亮色 */
+::selection {
+  background: rgba(6, 182, 212, 0.3);
+  color: #ffffff;
+}
+
+:root[data-theme='light'] ::selection {
+  background: rgba(8, 145, 178, 0.22);
+  color: #1b2438;
+}
+
+/* ============================================================
+   可调宽面板相关工具类（M3 新增）
+   ============================================================ */
+
+/**
+ * .panel-transitioning
+ * 功能：拖拽期间临时禁用子元素的 backdrop-filter，避免宽度变化时
+ *       backdrop-filter 频繁重绘导致卡顿；改为纯色背景，松手后恢复
+ * 实现方式：通过 CSS 选择器覆盖子级 .glass-panel 的 backdrop-filter
+ */
+.panel-transitioning .glass-panel,
+.panel-transitioning .glass-card {
+  background: rgb(var(--deep-rgb) / 0.92) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/**
+ * .panel-resize-handle
+ * 功能：拖拽手柄基础样式，实际定位与尺寸由内联 style 控制
+ * 实现方式：仅设 z-index 与 pointer-events，确保可点击且不被遮挡
+ */
+.panel-resize-handle {
+  z-index: 40;
+  pointer-events: auto;
+}
+
+/* 手柄 hover 时光标提示 */
+.panel-resize-handle:hover {
+  cursor: col-resize;
+}
+
+/**
+ * .slide-fade / .slide-fade-enter / .slide-fade-exit
+ * 功能：面板内容切换时的左右滑动 + 淡入淡出（用于 Crystallize ↔ Epitaxy 切换）
+ * 实现方式：transform translateX + opacity 组合，cubic-bezier 缓动
+ */
+.slide-fade {
+  transition: transform 400ms cubic-bezier(0.16, 1, 0.3, 1),
+              opacity 300ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.slide-fade-enter {
+  opacity: 0;
+  transform: translateX(40px);
+}
+
+.slide-fade-enter-active {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.slide-fade-exit {
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.slide-fade-exit-active {
+  opacity: 0;
+  transform: translateX(-40px);
+}
+
+/**
+ * .drawer-slide
+ * 功能：抽屉式面板从左侧滑入/滑出的动画（用于 CrystallizePanel questioning 阶段）
+ * 实现方式：transform translateX(-100%) 隐藏，translateX(0) 显示
+ */
+@keyframes drawerSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes drawerSlideOut {
+  0% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(-24px);
+  }
+}
+
+.drawer-slide-in {
+  animation: drawerSlideIn 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.drawer-slide-out {
+  animation: drawerSlideOut 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/**
+ * .panel-collapse-handle
+ * 功能：收起态的细窄按钮条样式，统一收起态视觉
+ */
+.panel-collapse-handle {
+  background: rgb(var(--deep-rgb) / 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border-right: 1px solid rgb(var(--line) / 0.05);
+  transition: background 0.25s ease;
+}
+
+.panel-collapse-handle:hover {
+  background: rgb(var(--deep-rgb) / 0.95);
+}
+
+/* ============================================================
+   主题切换：View Transitions 水波扩散 + 水滴涟漪圆环
+   ============================================================ */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* 水滴入水涟漪：点击点插入的扩散圆环（themeTransition.js 动态创建） */
+.theme-ripple-container {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.theme-ripple-ring {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  border: 2px solid var(--accent-cyan);
+  transform: translate(-50%, -50%);
+  opacity: 0.9;
+  animation: themeRipple 900ms cubic-bezier(0.22, 0.61, 0.36, 1) forwards;
+}
+
+.theme-ripple-ring:nth-child(2) {
+  animation-delay: 120ms;
+}
+
+@keyframes themeRipple {
+  0% {
+    width: 12px;
+    height: 12px;
+    opacity: 0.9;
+  }
+  100% {
+    width: 120px;
+    height: 120px;
+    opacity: 0;
+  }
+}
+
+/* ============================================================
+   主题工具类回退（ink/veil/line，与 tailwind.config.js 同值）
+   保证 dev server 未重载 tailwind 配置时样式依然正确
+   ============================================================ */
+.bg-veil\/10 { background-color: rgb(var(--veil) / 0.1); }
+.bg-veil\/5 { background-color: rgb(var(--veil) / 0.05); }
+.bg-veil\/\[0\.02\] { background-color: rgb(var(--veil) / 0.02); }
+.bg-veil\/\[0\.03\] { background-color: rgb(var(--veil) / 0.03); }
+.bg-veil\/\[0\.04\] { background-color: rgb(var(--veil) / 0.04); }
+.bg-veil\/\[0\.06\] { background-color: rgb(var(--veil) / 0.06); }
+.bg-veil\/\[0\.08\] { background-color: rgb(var(--veil) / 0.08); }
+.border-line\/10 { border-color: rgb(var(--line) / 0.1); }
+.border-line\/20 { border-color: rgb(var(--line) / 0.2); }
+.border-line\/30 { border-color: rgb(var(--line) / 0.3); }
+.border-line\/5 { border-color: rgb(var(--line) / 0.05); }
+.border-line\/8 { border-color: rgb(var(--line) / 0.08); }
+.border-line\/\[0\.04\] { border-color: rgb(var(--line) / 0.04); }
+.border-line\/\[0\.05\] { border-color: rgb(var(--line) / 0.05); }
+.border-line\/\[0\.06\] { border-color: rgb(var(--line) / 0.06); }
+.border-line\/\[0\.08\] { border-color: rgb(var(--line) / 0.08); }
+.placeholder-ink\/20::placeholder { color: rgb(var(--ink) / 0.2); }
+.placeholder-ink\/25::placeholder { color: rgb(var(--ink) / 0.25); }
+.placeholder-ink\/30::placeholder { color: rgb(var(--ink) / 0.3); }
+.stroke-line { stroke: rgb(var(--line) / 1.0); }
+.text-ink { color: rgb(var(--ink) / 1.0); }
+.text-ink\/0 { color: rgb(var(--ink) / 0.0); }
+.text-ink\/10 { color: rgb(var(--ink) / 0.1); }
+.text-ink\/15 { color: rgb(var(--ink) / 0.15); }
+.text-ink\/20 { color: rgb(var(--ink) / 0.2); }
+.text-ink\/25 { color: rgb(var(--ink) / 0.25); }
+.text-ink\/30 { color: rgb(var(--ink) / 0.3); }
+.text-ink\/35 { color: rgb(var(--ink) / 0.35); }
+.text-ink\/40 { color: rgb(var(--ink) / 0.4); }
+.text-ink\/45 { color: rgb(var(--ink) / 0.45); }
+.text-ink\/50 { color: rgb(var(--ink) / 0.5); }
+.text-ink\/55 { color: rgb(var(--ink) / 0.55); }
+.text-ink\/60 { color: rgb(var(--ink) / 0.6); }
+.text-ink\/65 { color: rgb(var(--ink) / 0.65); }
+.text-ink\/70 { color: rgb(var(--ink) / 0.7); }
+.text-ink\/80 { color: rgb(var(--ink) / 0.8); }
+.text-ink\/85 { color: rgb(var(--ink) / 0.85); }
+.text-ink\/90 { color: rgb(var(--ink) / 0.9); }
+.text-ink\/95 { color: rgb(var(--ink) / 0.95); }
+.focus\:bg-veil\/\[0\.06\]:focus { background-color: rgb(var(--veil) / 0.06); }
+.group:hover .group-hover\:text-ink\/40 { color: rgb(var(--ink) / 0.4); }
+.hover\:bg-veil\/10:hover { background-color: rgb(var(--veil) / 0.1); }
+.hover\:bg-veil\/5:hover { background-color: rgb(var(--veil) / 0.05); }
+.hover\:bg-veil\/\[0\.02\]:hover { background-color: rgb(var(--veil) / 0.02); }
+.hover\:bg-veil\/\[0\.03\]:hover { background-color: rgb(var(--veil) / 0.03); }
+.hover\:bg-veil\/\[0\.04\]:hover { background-color: rgb(var(--veil) / 0.04); }
+.hover\:bg-veil\/\[0\.06\]:hover { background-color: rgb(var(--veil) / 0.06); }
+.hover\:border-line\/\[0\.12\]:hover { border-color: rgb(var(--line) / 0.12); }
+.hover\:text-ink\/60:hover { color: rgb(var(--ink) / 0.6); }
+.hover\:text-ink\/70:hover { color: rgb(var(--ink) / 0.7); }
+.hover\:text-ink\/80:hover { color: rgb(var(--ink) / 0.8); }
+.hover\:text-ink\/85:hover { color: rgb(var(--ink) / 0.85); }
+.hover\:text-ink\/90:hover { color: rgb(var(--ink) / 0.9); }
+.hover\:text-ink\/95:hover { color: rgb(var(--ink) / 0.95); }
+
+/* 弹窗关闭按钮 hover 动效：旋转90° + 放大1.1倍 + 变红 */
+.modal-close-btn {
+  transition: transform 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+}
+.modal-close-btn:hover {
+  transform: rotate(90deg) scale(1.1);
+  color: #f87171; /* red-400 */
+  background-color: rgb(var(--veil) / 0.06);
+}

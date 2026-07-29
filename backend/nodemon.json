@@ -1,0 +1,6 @@
+{
+  "watch": ["src"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": ["data", ".cache", "node_modules"],
+  "exec": "node src/server.js"
+}
