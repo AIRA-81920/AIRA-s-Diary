@@ -472,27 +472,37 @@ export function deleteAddendum(addendumId) {
 
 /**
  * 创建评论
+ * @param {string} inspirationId - 灵感 ID
  * @param {string} addendumId - 追加条目 ID
- * @param {string} content - 评论内容
+ * @param {string} content - 评论核心文本
+ * @param {string} [context] - 评论展开/阐释部分（可空，用于折叠展示）
  * @returns {Promise<{success: boolean, data: object}>}
  */
-export function createComment(addendumId, content) {
-  return request(`/addenda/${addendumId}/comments`, {
+// 创建评论：路径与后端路由 /inspirations/:id/addenda/:addendumId/comments 对齐
+// v9：新增 context 字段透传，后端 addendumService.createComment 接收第三个参数
+export function createComment(inspirationId, addendumId, content, context) {
+  // 仅在 context 非空时加入 body，避免后端收到 undefined 字符串
+  const body = context ? { content, context } : { content };
+  return request(`/inspirations/${inspirationId}/addenda/${addendumId}/comments`, {
     method: 'POST',
-    body: JSON.stringify({ content })
+    body: JSON.stringify(body)
   })
 }
 
 /**
  * 更新评论
  * @param {string} commentId - 评论 ID
- * @param {string} content - 新评论内容
+ * @param {string} content - 新评论核心文本
+ * @param {string} [context] - 新评论展开/阐释部分（undefined 表示不更新该字段）
  * @returns {Promise<{success: boolean, data: object}>}
  */
-export function updateComment(commentId, content) {
+// v9：新增可选 context 参数；undefined 不传入 body，后端 service 判断后不更新该字段
+export function updateComment(commentId, content, context) {
+  // context === undefined 时不更新该字段；显式传 null 表示清空
+  const body = context !== undefined ? { content, context } : { content };
   return request(`/comments/${commentId}`, {
     method: 'PUT',
-    body: JSON.stringify({ content })
+    body: JSON.stringify(body)
   })
 }
 

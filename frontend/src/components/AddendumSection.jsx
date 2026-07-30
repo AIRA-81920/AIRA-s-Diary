@@ -10,7 +10,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Plus, Pencil, Trash2, MessageSquare, Search, Link2, Image as ImageIcon,
-  X, Send, Loader2, ExternalLink
+  X, Send, Loader2, ExternalLink, ChevronDown
 } from 'lucide-react'
 import { formatTime } from '../services/store.js'
 import useStore from '../services/store.js'
@@ -135,8 +135,8 @@ function AddendumSection({ inspirationId }) {
               onExplore={() => handleExplore(addendum)}
               commentDraft={commentDraft && commentDraft.addendumId === addendum.id ? commentDraft : null}
               onCommentDraftConsumed={clearCommentDraft}
-              onCreateComment={(content) => createComment(addendum.id, content, inspirationId)}
-              onUpdateComment={(commentId, content) => updateComment(commentId, content, inspirationId)}
+              onCreateComment={(content, context) => createComment(addendum.id, content, inspirationId, context)}
+              onUpdateComment={(commentId, content, context) => updateComment(commentId, content, inspirationId, context)}
               onDeleteComment={(commentId) => deleteComment(commentId, inspirationId)}
             />
           ))}
@@ -356,15 +356,22 @@ function AddendumCard({
 }
 
 /**
- * CommentItem 单条评论（支持内联编辑）
- * 功能：点击评论文本进入编辑态，失焦或回车保存
+ * CommentItem 单条评论（支持内联编辑 + context 折叠展示）
+ * 功能：
+ *   - comment.content 始终可见（核心文本）
+ *   - comment.context 存在时折叠展示（点击"展开"查看阐释部分）
+ *   - 点击核心文本进入编辑态（仅编辑 content，context 保持不变）
+ * v9：新增 context 折叠区，用于 AI 回复"转为评论"后的分层展示
  */
 function CommentItem({ comment, onUpdate, onDelete }) {
   const [editing, setEditing] = useState(false)
   const [text, setText] = useState(comment.content || '')
+  // context 折叠状态：默认折叠（false=收起，true=展开）
+  const [contextExpanded, setContextExpanded] = useState(false)
   // 内联删除确认状态
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const inputRef = useRef(null)
+  const hasContext = !!(comment.context && comment.context.trim())
 
   // 进入编辑态时聚焦
   useEffect(() => {
@@ -380,11 +387,12 @@ function CommentItem({ comment, onUpdate, onDelete }) {
     return () => clearTimeout(t)
   }, [confirmingDelete])
 
-  /** 保存编辑 */
+  /** 保存编辑（仅更新 content，context 不变） */
   const handleSave = () => {
     const trimmed = text.trim()
     if (trimmed && trimmed !== comment.content) {
-      onUpdate(trimmed)
+      // v9：编辑时 context 传 undefined，store/api 判断后不更新该字段，保留原值
+      onUpdate(trimmed, undefined)
     } else {
       setText(comment.content || '')
     }
@@ -415,11 +423,41 @@ function CommentItem({ comment, onUpdate, onDelete }) {
   return (
     <div className="group flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-veil/[0.02] transition-colors">
       <div className="flex-1 min-w-0">
+        {/* 核心文本（始终可见，点击进入编辑） */}
         <p className="text-ink/60 text-xs leading-[1.6] whitespace-pre-wrap font-sans cursor-text"
            onClick={() => setEditing(true)}
         >
           {comment.content}
         </p>
+        {/* v9：context 折叠区（阐释部分，点击展开/收起） */}
+        {hasContext && (
+          <div className="mt-1">
+            <button
+              type="button"
+              onClick={() => setContextExpanded((v) => !v)}
+              className="flex items-center gap-1 text-ink/30 hover:text-ink/60 text-[10px] font-sans transition-colors"
+            >
+              <ChevronDown
+                size={10}
+                className={`transition-transform duration-200 ${contextExpanded ? 'rotate-180' : ''}`}
+              />
+              <span>{contextExpanded ? '收起' : '展开阐释'}</span>
+            </button>
+            {/* 折叠内容（max-height + opacity 过渡，与评论区展开保持一致风格） */}
+            <div
+              className="overflow-hidden"
+              style={{
+                maxHeight: contextExpanded ? '500px' : '0px',
+                opacity: contextExpanded ? 1 : 0,
+                transition: 'max-height 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease'
+              }}
+            >
+              <p className="text-ink/40 text-xs leading-[1.6] whitespace-pre-wrap font-sans pt-1 pl-2 border-l border-line/10">
+                {comment.context}
+              </p>
+            </div>
+          </div>
+        )}
         <span className="text-ink/20 text-[10px] font-sans">
           {formatTime(comment.created_at)}
         </span>
@@ -460,14 +498,28 @@ function CommentItem({ comment, onUpdate, onDelete }) {
 /**
  * CommentInput 评论输入框
  * 功能：textarea + 发送按钮，支持 commentDraft 预填
+ *   v9：当 draft 携带 context（来自 AI 回复的阐释部分）时，
+ *        展示可折叠的"阐释"输入区，提交时同时传递 content 与 context
  */
 function CommentInput({ draft, onDraftConsumed, onSubmit }) {
   const [text, setText] = useState('')
+  // v9：context 草稿状态（仅 draft 携带时启用）
+  const [contextText, setContextText] = useState('')
+  const [contextOpen, setContextOpen] = useState(false)
+  const contextRef = useRef(null)
 
-  // 监听 draft：有草稿时预填到输入框
+  // 监听 draft：有草稿时预填 content（与可选 context）到输入框
   useEffect(() => {
     if (draft && draft.content) {
       setText(draft.content)
+      // v9：若草稿携带 context，预填并自动展开阐释区
+      if (draft.context) {
+        setContextText(draft.context)
+        setContextOpen(true)
+      } else {
+        setContextText('')
+        setContextOpen(false)
+      }
       onDraftConsumed?.()
     }
   }, [draft, onDraftConsumed])
@@ -476,34 +528,66 @@ function CommentInput({ draft, onDraftConsumed, onSubmit }) {
   const handleSubmit = () => {
     const trimmed = text.trim()
     if (!trimmed) return
-    onSubmit(trimmed)
+    // v9：context 仅在非空时传递，空字符串转为 null
+    const ctx = contextText.trim() || null
+    onSubmit(trimmed, ctx)
     setText('')
+    setContextText('')
+    setContextOpen(false)
   }
 
   return (
-    <div className="flex items-end gap-2 mt-2">
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="写下你的评论..."
-        rows={1}
-        className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 placeholder-ink/25 resize-none font-sans"
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault()
-            handleSubmit()
-          }
-        }}
-      />
-      <button
-        type="button"
-        onClick={handleSubmit}
-        disabled={!text.trim()}
-        className="glass-card p-1.5 rounded-md text-ink/40 hover:text-ink/80 disabled:opacity-30 transition-all"
-        title="发送评论"
-      >
-        <Send size={13} />
-      </button>
+    <div className="mt-2 space-y-1.5">
+      {/* 主输入框（核心文本） */}
+      <div className="flex items-end gap-2">
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="写下你的评论..."
+          rows={1}
+          className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 placeholder-ink/25 resize-none font-sans"
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              handleSubmit()
+            }
+          }}
+        />
+        <button
+          type="button"
+          onClick={handleSubmit}
+          disabled={!text.trim()}
+          className="glass-card p-1.5 rounded-md text-ink/40 hover:text-ink/80 disabled:opacity-30 transition-all"
+          title="发送评论"
+        >
+          <Send size={13} />
+        </button>
+      </div>
+      {/* v9：阐释输入区（可折叠，仅在 contextOpen 或已有 contextText 时显示） */}
+      {(contextOpen || contextText) && (
+        <div className="pl-2 border-l border-line/10">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-ink/30 text-[10px] font-sans">阐释（可选，折叠展示）</span>
+            <button
+              type="button"
+              onClick={() => setContextOpen((v) => !v)}
+              className="text-ink/30 hover:text-ink/60 text-[10px] font-sans transition-colors"
+            >
+              {contextOpen ? '收起' : '展开'}
+            </button>
+          </div>
+          {contextOpen && (
+            <textarea
+              ref={contextRef}
+              value={contextText}
+              onChange={(e) => setContextText(e.target.value)}
+              placeholder="补充阐释..."
+              rows={2}
+              className="input-accent w-full px-3 py-1.5 rounded-md text-xs text-ink/60 placeholder-ink/25 resize-none font-sans"
+            />
+          )}
+        </div>
+      )}
     </div>
   )
 }

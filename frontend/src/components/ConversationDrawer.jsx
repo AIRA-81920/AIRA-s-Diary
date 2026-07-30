@@ -141,11 +141,17 @@ function ConversationDrawer() {
     }
   }
 
-  /** "转为评论"：把 AI 回答内容带到 AddendumSection 的评论输入框 */
+  /** "转为评论"：把 AI 回答内容带到 AddendumSection 的评论输入框
+   *  v9：优先把 core 作为评论核心文本，context 作为折叠的阐释部分；
+   *      AI 未标记 [CORE] 时，用完整显示文本作为评论核心，无折叠部分 */
   const handleConvertToComment = (index) => {
     const msg = conversationMessages[index]
-    if (!msg || conversationAddendumId) {
-      setCommentDraft(conversationAddendumId, msg.text)
+    if (!msg || !conversationAddendumId) return
+    // 有 core：core 作 content，context 作折叠部分；无 core：text 作 content，无折叠
+    if (msg.core) {
+      setCommentDraft(conversationAddendumId, msg.core, msg.context)
+    } else {
+      setCommentDraft(conversationAddendumId, msg.text || '', null)
     }
   }
 

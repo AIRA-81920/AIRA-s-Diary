@@ -60,6 +60,9 @@ function groupReplies(replies) {
       id: r.id || r.reply_id,
       question: r.question,
       answer: r.answer,
+      // v9：透传 core/context，供详情卡片预览时优先用 core（更精炼）
+      core: r.core || null,
+      context: r.context || null,
       saved_at: r.saved_at || r.savedAt || r.created_at || r.createdAt
     })
     // 更新搁置时间为最新的

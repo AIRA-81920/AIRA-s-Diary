@@ -147,17 +147,19 @@ export async function listAddenda(req, res) {
 
 /**
  * 创建评论
- * 功能：POST /inspirations/:id/addenda/:addendumId/comments，body:{content}
+ * 功能：POST /inspirations/:id/addenda/:addendumId/comments，body:{content, context?}
  * 实现方式：调 service.createComment，不调 markStale（评论不影响指纹）
+ *   - v9：新增 context 字段（可空），用于评论折叠展示
  */
 export async function createComment(req, res) {
   try {
     const { addendumId } = req.params;
-    const { content } = req.body;
+    const { content, context } = req.body;
     if (!content) {
       return res.status(400).json({ success: false, error: 'content is required' });
     }
-    const result = addendumService.createComment(addendumId, content);
+    // context 可能为 null/undefined，直接透传给 service
+    const result = addendumService.createComment(addendumId, content, context);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] createComment failed:', e.message);
@@ -167,16 +169,18 @@ export async function createComment(req, res) {
 
 /**
  * 更新评论
- * 功能：PUT /comments/:commentId，body:{content}
+ * 功能：PUT /comments/:commentId，body:{content, context?}
+ * 实现方式：调 service.updateComment；v9 支持同时更新 context（可选）
  */
 export async function updateComment(req, res) {
   try {
     const { commentId } = req.params;
-    const { content } = req.body;
+    const { content, context } = req.body;
     if (!content) {
       return res.status(400).json({ success: false, error: 'content is required' });
     }
-    const result = addendumService.updateComment(commentId, content);
+    // context 为 undefined 表示不更新该字段；显式传 null 表示清空
+    const result = addendumService.updateComment(commentId, content, context);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] updateComment failed:', e.message);
@@ -201,17 +205,20 @@ export async function deleteComment(req, res) {
 
 /**
  * 保存 AI 回答
- * 功能：POST /inspirations/:id/addenda/:addendumId/replies，body:{question, answer}
+ * 功能：POST /inspirations/:id/addenda/:addendumId/replies，body:{question, answer, core?, context?}
  * 实现方式：从路径 :id 取 inspiration_id，调 service.saveReply，不调 markStale
+ *   - v9：新增 core / context 分层字段，由前端从 AI 回复的 [CORE] 标签解析后传入
+ *   - answer 保留完整原文（含标签），core/context 为解析后的结构化字段
  */
 export async function saveReply(req, res) {
   try {
     const { id, addendumId } = req.params;
-    const { question, answer } = req.body;
+    const { question, answer, core, context } = req.body;
     if (!question || !answer) {
       return res.status(400).json({ success: false, error: 'question and answer are required' });
     }
-    const result = addendumService.saveReply(addendumId, id, { question, answer });
+    // core / context 可为 null/undefined，直接透传给 service
+    const result = addendumService.saveReply(addendumId, id, { question, answer, core, context });
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] saveReply failed:', e.message);

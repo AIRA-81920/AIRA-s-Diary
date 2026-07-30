@@ -145,8 +145,8 @@ export function deleteAddendum(addendumId) {
  * 功能：SELECT 所有追加主帖 → 对每条再查 comments 和 saved_replies → 组装嵌套结构
  * 实现方式：queryAll 主表 → 逐条 queryAll 子表 → JSON 字段解析回数组
  * 返回结构：{ id, inspiration_id, content, links:[], images:[], created_at, updated_at,
- *            comments:[{id,content,created_at,updated_at}],
- *            saved_replies:[{id,question,answer,saved_at}] }
+ *            comments:[{id,content,context,created_at,updated_at}],
+ *            saved_replies:[{id,question,answer,core,context,saved_at}] }
  * @param {string} inspirationId - 灵感 ID
  * @returns {Array<Object>} 追加主帖数组（按 created_at 升序）
  */
@@ -161,8 +161,9 @@ export function listAddenda(inspirationId) {
     let comments = [];
     let savedReplies = [];
     try {
+      // v9：comments 表新增 context 列（可空），用于评论折叠展示
       comments = queryAll(
-        'SELECT id, content, created_at, updated_at FROM addendum_comments WHERE addendum_id = ? ORDER BY created_at ASC',
+        'SELECT id, content, context, created_at, updated_at FROM addendum_comments WHERE addendum_id = ? ORDER BY created_at ASC',
         [row.id]
       );
     } catch (err) {
@@ -170,8 +171,9 @@ export function listAddenda(inspirationId) {
       console.warn(`[AddendumService] read comments failed for ${row.id}: ${err.message}`);
     }
     try {
+      // v9：saved_replies 表新增 core / context 列（可空），用于 AI 回复分层展示
       savedReplies = queryAll(
-        'SELECT id, question, answer, saved_at FROM saved_ai_replies WHERE addendum_id = ? ORDER BY saved_at ASC',
+        'SELECT id, question, answer, core, context, saved_at FROM saved_ai_replies WHERE addendum_id = ? ORDER BY saved_at ASC',
         [row.id]
       );
     } catch (err) {
@@ -193,18 +195,19 @@ export function listAddenda(inspirationId) {
 
 /**
  * 创建评论
- * 功能：向 addendum_comments 表插入一条新评论
- * 实现方式：db.run 参数化插入
+ * 功能：向 addendum_comments 表插入一条新评论（可选携带 context 折叠内容）
+ * 实现方式：db.run 参数化插入；context 缺省为 null（无折叠内容时）
  * @param {string} addendumId - 追加主帖 ID
- * @param {string} content - 评论文本
+ * @param {string} content - 评论核心文本
+ * @param {string} [context] - 评论展开/阐释部分（可空，用于折叠展示）
  * @returns {{id: string}} 新建评论 ID
  */
-export function createComment(addendumId, content) {
+export function createComment(addendumId, content, context = null) {
   const id = uuidv4();
   const now = new Date().toISOString();
   db.run(
-    'INSERT INTO addendum_comments (id, addendum_id, content, created_at) VALUES (?, ?, ?, ?)',
-    [id, addendumId, content, now]
+    'INSERT INTO addendum_comments (id, addendum_id, content, context, created_at) VALUES (?, ?, ?, ?, ?)',
+    [id, addendumId, content, context, now]
   );
   saveDb();
   return { id };
@@ -212,19 +215,25 @@ export function createComment(addendumId, content) {
 
 /**
  * 更新评论
- * 功能：UPDATE content / updated_at
- * 实现方式：db.run 参数化更新，行不存在时返回 success:false
+ * 功能：UPDATE content / context / updated_at
+ * 实现方式：db.run 参数化更新，行不存在时返回 success:false；context 缺省时不更新该字段
  * @param {string} commentId - 评论 ID
- * @param {string} content - 新评论文本
+ * @param {string} content - 新评论核心文本
+ * @param {string} [context] - 新评论展开/阐释部分（undefined 表示不更新该字段）
  * @returns {{success: boolean}}
  */
-export function updateComment(commentId, content) {
+export function updateComment(commentId, content, context) {
   const existing = queryOne('SELECT id FROM addendum_comments WHERE id = ?', [commentId]);
   if (!existing) {
     return { success: false };
   }
   const now = new Date().toISOString();
-  db.run('UPDATE addendum_comments SET content = ?, updated_at = ? WHERE id = ?', [content, now, commentId]);
+  // context 为 undefined 时不更新该字段（仅更新 content）；显式传入 null 时清空
+  if (context === undefined) {
+    db.run('UPDATE addendum_comments SET content = ?, updated_at = ? WHERE id = ?', [content, now, commentId]);
+  } else {
+    db.run('UPDATE addendum_comments SET content = ?, context = ?, updated_at = ? WHERE id = ?', [content, context, now, commentId]);
+  }
   saveDb();
   return { success: true };
 }
@@ -248,19 +257,22 @@ export function deleteComment(commentId) {
 
 /**
  * 保存 AI 回答
- * 功能：向 saved_ai_replies 表插入一条用户主动保存的问答对
+ * 功能：向 saved_ai_replies 表插入一条用户主动保存的问答对（含 core/context 分层字段）
  * 实现方式：db.run 参数化插入，inspiration_id 冗余字段便于全局列表查询
+ *   - core：AI 回复中 [CORE] 标签包裹的核心观点（可空，未标记时为 null）
+ *   - context：AI 回复中标签外的阐释/展开部分（可空）
+ *   - answer：保留含 [CORE] 标签的完整原文，便于编辑/重新解析
  * @param {string} addendumId - 追加主帖 ID
  * @param {string} inspirationId - 灵感 ID（冗余存储）
- * @param {{question: string, answer: string}} data - 问答对
+ * @param {{question: string, answer: string, core?: string, context?: string}} data - 问答对 + 分层字段
  * @returns {{id: string}} 新建记录 ID
  */
-export function saveReply(addendumId, inspirationId, { question, answer }) {
+export function saveReply(addendumId, inspirationId, { question, answer, core = null, context = null }) {
   const id = uuidv4();
   const now = new Date().toISOString();
   db.run(
-    'INSERT INTO saved_ai_replies (id, addendum_id, inspiration_id, question, answer, saved_at) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, addendumId, inspirationId, question, answer, now]
+    'INSERT INTO saved_ai_replies (id, addendum_id, inspiration_id, question, answer, core, context, saved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+    [id, addendumId, inspirationId, question, answer, core, context, now]
   );
   saveDb();
   return { id };
@@ -286,13 +298,13 @@ export function deleteReply(replyId) {
 /**
  * 列出某灵感下所有已保存 AI 回答
  * 功能：SELECT * FROM saved_ai_replies WHERE inspiration_id = ?，按 saved_at 降序
- * 实现方式：queryAll 参数化查询
+ * 实现方式：queryAll 参数化查询；v9 起新增 core/context 字段读取
  * @param {string} inspirationId - 灵感 ID
  * @returns {Array<Object>} 已保存回答数组
  */
 export function listSavedRepliesByInspiration(inspirationId) {
   return queryAll(
-    'SELECT id, addendum_id, inspiration_id, question, answer, saved_at FROM saved_ai_replies WHERE inspiration_id = ? ORDER BY saved_at DESC',
+    'SELECT id, addendum_id, inspiration_id, question, answer, core, context, saved_at FROM saved_ai_replies WHERE inspiration_id = ? ORDER BY saved_at DESC',
     [inspirationId]
   );
 }
@@ -302,15 +314,16 @@ export function listSavedRepliesByInspiration(inspirationId) {
  * 功能：JOIN inspiration_addenda 取 content 摘要 + JOIN inspirations 取 title
  *       + 子查询统计每条回答下的评论数
  * 返回结构：{ id, addendum_id, inspiration_id, inspiration_title, addendum_excerpt(≤200字),
- *            question, answer, saved_at, comment_count }
+ *            question, answer, core, context, saved_at, comment_count }
  * 实现方式：
- *   1. queryAll 主查询 LEFT JOIN 获取关联字段
+ *   1. queryAll 主查询 LEFT JOIN 获取关联字段；v9 起读取 r.core / r.context
  *   2. 子查询 (SELECT COUNT(*) FROM addendum_comments WHERE addendum_id=...) 统计 comment_count
  *   3. excerpt 用 substr 截断到 200 字
  * @returns {Array<Object>} 已保存回答摘要数组
  */
 export function listAllSavedReplies() {
   // LEFT JOIN 保证：即使灵感或追加主帖被删除（理论上 FK 会级联，这里防御性处理），仍能返回记录
+  // v9：新增 r.core / r.context 字段，前端列表预览优先用 core，无 core 时降级用 answer
   return queryAll(
     `SELECT
        r.id AS id,
@@ -320,6 +333,8 @@ export function listAllSavedReplies() {
        substr(a.content, 1, 200) AS addendum_excerpt,
        r.question AS question,
        r.answer AS answer,
+       r.core AS core,
+       r.context AS context,
        r.saved_at AS saved_at,
        (SELECT COUNT(*) FROM addendum_comments c WHERE c.addendum_id = r.addendum_id) AS comment_count
      FROM saved_ai_replies r

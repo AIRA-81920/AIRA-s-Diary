@@ -203,7 +203,8 @@ CREATE INDEX IF NOT EXISTS idx_addenda_inspiration ON inspiration_addenda(inspir
 CREATE TABLE IF NOT EXISTS addendum_comments (
   id TEXT PRIMARY KEY,
   addendum_id TEXT NOT NULL,        -- 关联追加主帖
-  content TEXT NOT NULL,            -- 评论文本（纯文本，无链接图片）
+  content TEXT NOT NULL,            -- 评论文本核心部分（纯文本，无链接图片）
+  context TEXT,                     -- 评论文本展开/阐释部分（可空，用于折叠展示）
   created_at DATETIME NOT NULL,
   updated_at DATETIME,              -- 编辑时间（首次创建时为 NULL）
   FOREIGN KEY (addendum_id) REFERENCES inspiration_addenda(id) ON DELETE CASCADE
@@ -216,7 +217,9 @@ CREATE TABLE IF NOT EXISTS saved_ai_replies (
   addendum_id TEXT NOT NULL,        -- 关联追加主帖
   inspiration_id TEXT NOT NULL,     -- 冗余字段，便于"继续思考"全局列表查询
   question TEXT NOT NULL,           -- 用户当时问的问题
-  answer TEXT NOT NULL,             -- AI 的回答
+  answer TEXT NOT NULL,             -- AI 的完整回答（含 [CORE] 标签的原文）
+  core TEXT,                        -- AI 回答的核心观点（[CORE] 标签内容，可空）
+  context TEXT,                     -- AI 回答的阐释/展开部分（标签外的内容，可空）
   saved_at DATETIME NOT NULL,       -- 保存时间
   FOREIGN KEY (addendum_id) REFERENCES inspiration_addenda(id) ON DELETE CASCADE
 );

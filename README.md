@@ -74,7 +74,7 @@ AIRA's Diary/
 
 ### GitHub Release（推荐，开箱即用）
 
-前往 [Releases](https://github.com/AIRA-81920/AIRA-s-Diary/releases) 下载 `AIRAs-Diary-vX.X.X.7z`。
+前往 [Releases](https://github.com/<username>/airas-diary/releases) 下载 `AIRAs-Diary-vX.X.X.7z`。
 
 - **已内置 embedding 模型**（Xenova/paraphrase-multilingual-MiniLM-L12-v2，ONNX 量化版，约 113MB），无需联网下载
 - 解压后编辑 `backend/.env.example` 为 `backend/.env`，填入 API Key
@@ -83,7 +83,7 @@ AIRA's Diary/
 ### 从源码运行
 
 ```bash
-git clone https://github.com/AIRA-81920/AIRA-s-Diary.git
+git clone https://github.com/<username>/airas-diary.git
 cd airas-diary
 npm install
 cd backend
@@ -184,10 +184,9 @@ Bug 也好，反直觉的设计也好，"这个功能完全没有存在的必要
 
 **产品不只有开发者，还得要有用户。** 而这恰恰是我一个人做不到的。
 
-如果你愿意花时间试用然后告诉我你的想法——[提个 Issue](https://github.com/AIRA-81920/AIRA-s-Diary/issues)，或者发邮箱：2262565619@qq.com，我都会认真看，认真给予回应。
+如果你愿意花时间试用然后告诉我你的想法——[提个 Issue](https://github.com/<username>/airas-diary/issues)，或者发邮箱：2262565619@qq.com，我都会认真看，认真给予回应。
 
-最后，关于命名。
-其实这个项目和艾拉并没有什么联系（虽然她也有一个日记本，但涵义不一样）。纯粹只是我很喜欢艾拉所以才这样取名的_(:з」∠)_
+最后，关于命名。其实这个项目和艾拉并没有什么联系（虽然她也有一个日记本，但涵义不一样）。纯粹只是我很喜欢艾拉所以才这样取名的_(:з」∠)_
 
 ---
 

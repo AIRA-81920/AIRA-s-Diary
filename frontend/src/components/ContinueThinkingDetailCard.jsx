@@ -4,9 +4,20 @@
 //   - 毛玻璃浮层（fixed inset-0 z-50）
 //   - 卡片展示：灵感标题 + 追加条目完整内容 + 链接/图片 + 已保存对话列表 + 评论数
 //   - Enter 按钮：关闭面板 → 选中灵感 → 加载追加条目 → 打开对话抽屉
-import React from 'react'
-import { X, Link2, Bookmark, MessageSquare, ArrowRight, ExternalLink } from 'lucide-react'
+import React, { useState } from 'react'
+import { X, Link2, Bookmark, MessageSquare, ArrowRight, ExternalLink, ChevronDown } from 'lucide-react'
 import useStore from '../services/store.js'
+
+/**
+ * 从可能含 [CORE] 标签的原文派生显示文本（v9）
+ * 功能：移除 [CORE]/[/CORE] 标签，保留标签内文本作为正常内容显示
+ * @param {string} rawText - 可能含标签的原文
+ * @returns {string} 移除标签后的显示文本
+ */
+function stripCoreTags(rawText) {
+  if (!rawText) return ''
+  return rawText.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '')
+}
 
 /**
  * @param {object} props
@@ -151,24 +162,7 @@ function ContinueThinkingDetailCard({ item, onClose }) {
             </div>
             <div className="space-y-3">
               {replies.map((reply, i) => (
-                <div
-                  key={reply.id || i}
-                  className="rounded-lg p-3"
-                  style={{ background: 'rgb(var(--amber-rgb) / 0.05)', border: '1px solid rgb(var(--amber-rgb) / 0.1)' }}
-                >
-                  {/* 提问 */}
-                  {reply.question && (
-                    <p className="text-ink/50 text-xs leading-[1.6] font-sans mb-2">
-                      <span className="text-ink/30">Q: </span>
-                      {reply.question}
-                    </p>
-                  )}
-                  {/* 回答摘要（截断到 2 行） */}
-                  <p className="text-ink/70 text-sm leading-[1.6] font-sans line-clamp-2">
-                    <span style={{ color: 'var(--accent-amber)' }}>A: </span>
-                    {reply.answer}
-                  </p>
-                </div>
+                <ReplyPreview key={reply.id || i} reply={reply} />
               ))}
             </div>
           </div>
@@ -206,3 +200,73 @@ function ContinueThinkingDetailCard({ item, onClose }) {
 }
 
 export default ContinueThinkingDetailCard
+
+/**
+ * ReplyPreview 单条已保存回答的预览卡片（v9 新增）
+ * 功能：
+ *   - 优先用 reply.core 作为核心预览（更精炼，直接回应用户提问）
+ *   - reply.core 缺失时降级为 reply.answer（移除 [CORE] 标签后的全文）
+ *   - 当 reply.context 存在时，提供"展开阐释"折叠查看完整内容
+ * 实现方式：
+ *   - 有 core：显示 core（高亮），context 折叠展示
+ *   - 无 core：显示 answer（移除标签），无折叠区
+ *   - 旧数据（v9 前）core/context 均为 null，自动降级为 answer 显示
+ */
+function ReplyPreview({ reply }) {
+  // context 折叠状态：默认收起
+  const [expanded, setExpanded] = useState(false)
+  // 从 answer（含 [CORE] 标签原文）派生显示文本
+  const displayAnswer = stripCoreTags(reply.answer)
+  // core 优先作为预览；无 core 时用 displayAnswer 兜底
+  const previewText = reply.core || displayAnswer
+  // 仅当 core 存在且 context 非空时显示折叠区
+  const hasContext = !!(reply.core && reply.context && reply.context.trim())
+
+  return (
+    <div
+      className="rounded-lg p-3"
+      style={{ background: 'rgb(var(--amber-rgb) / 0.05)', border: '1px solid rgb(var(--amber-rgb) / 0.1)' }}
+    >
+      {/* 提问 */}
+      {reply.question && (
+        <p className="text-ink/50 text-xs leading-[1.6] font-sans mb-2">
+          <span className="text-ink/30">Q: </span>
+          {reply.question}
+        </p>
+      )}
+      {/* 核心预览（截断到 2 行） */}
+      <p className="text-ink/70 text-sm leading-[1.6] font-sans line-clamp-2">
+        <span style={{ color: 'var(--accent-amber)' }}>A: </span>
+        {previewText}
+      </p>
+      {/* v9：阐释折叠区（仅 core 存在且有 context 时显示） */}
+      {hasContext && (
+        <div className="mt-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="flex items-center gap-1 text-ink/30 hover:text-ink/60 text-[11px] font-sans transition-colors"
+          >
+            <ChevronDown
+              size={11}
+              className={`transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+            />
+            <span>{expanded ? '收起阐释' : '展开阐释'}</span>
+          </button>
+          <div
+            className="overflow-hidden"
+            style={{
+              maxHeight: expanded ? '400px' : '0px',
+              opacity: expanded ? 1 : 0,
+              transition: 'max-height 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 200ms ease'
+            }}
+          >
+            <p className="text-ink/50 text-xs leading-[1.6] font-sans pt-1.5 pl-2 border-l border-line/10 whitespace-pre-wrap">
+              {reply.context}
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

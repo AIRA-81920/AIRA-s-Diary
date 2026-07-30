@@ -42,6 +42,71 @@ export function formatTime(value) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// ========== v9：AI 回复 [CORE] 标签解析工具 ==========
+// 设计背景：AI 在回复中用 [CORE]...[/CORE] 标签包裹核心观点，
+//   前端需要：(1) 流式渲染时不显示标签本身；(2) 流结束后解析出 core/context 分层存储
+//   解析规则：
+//     - core：第一个 [CORE]...[/CORE] 块内的文本（trim 后）
+//     - context：标签外的所有文本（按原顺序拼接，trim 后）；无 core 时 context 为完整文本
+//     - 一条回复最多一个 [CORE] 块（多余的被当作普通文本处理）
+
+/**
+ * 从含 [CORE] 标签的原始文本中解析出 core 与 context
+ * 功能：提取第一个 [CORE]...[/CORE] 块作为 core；标签外的文本作为 context
+ * 实现方式：正则非贪婪匹配首个 [CORE] 块；无匹配时 core=null，context=清理后的全文
+ * @param {string} rawText - AI 回复的完整原文（可能含 [CORE] 标签）
+ * @returns {{core: string|null, context: string|null}}
+ */
+export function parseCoreContext(rawText) {
+  if (!rawText) return { core: null, context: null }
+  // 非贪婪匹配首个 [CORE] 块；[\s\S] 保证跨行匹配
+  const match = rawText.match(/\[CORE\]([\s\S]*?)\[\/CORE\]/)
+  // 通用清理：移除所有完整 [CORE]/[/CORE] 标签（处理边缘情况下的多余标签）
+  const stripTags = (s) => s.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '').trim()
+  if (!match) {
+    // 无标签：core 为 null，context 为清理后的全文（兼容旧数据）
+    const cleaned = stripTags(rawText)
+    return { core: null, context: cleaned || null }
+  }
+  const core = match[1].trim() || null
+  // context = 标签前 + 标签后的文本，去掉残留标签后 trim
+  const before = rawText.slice(0, match.index)
+  const after = rawText.slice(match.index + match[0].length)
+  const context = stripTags(before + after)
+  return { core, context: context || null }
+}
+
+/**
+ * 计算流式渲染时的显示文本（隐藏 [CORE] 标签本身，避免闪烁）
+ * 功能：从 rawText 派生 displayText —— 移除完整标签 + 暂存尾部"半截标签"避免闪烁
+ * 实现方式：
+ *   1. 检测 rawText 末尾是否为 '[CORE]' 或 '[/CORE]' 的前缀（如 '[CO'、'[/C'）
+ *   2. 若是，从 displayText 末尾暂时砍掉这部分（hold-back），等下一 chunk 补全后再决定
+ *   3. 移除剩余文本中所有完整的 [CORE]/[/CORE] 标签
+ *   注意：onDone 时不需 hold-back（流已结束，残留必为完整标签或字面量），直接 stripTags
+ * @param {string} rawText - 当前累积的完整原文
+ * @returns {string} 用于渲染的显示文本
+ */
+export function computeDisplayText(rawText) {
+  if (!rawText) return ''
+  // 检测尾部"半截标签"：rawText 末尾若为 '[CORE]' 或 '[/CORE]' 的前缀，holdBack 记录其长度
+  const tags = ['[CORE]', '[/CORE]']
+  let holdBack = 0
+  for (const tag of tags) {
+    // 从最长前缀开始检测（length-1 到 1），取首个匹配（即最长匹配）
+    for (let len = Math.min(tag.length - 1, rawText.length); len >= 1; len--) {
+      if (rawText.endsWith(tag.slice(0, len))) {
+        holdBack = Math.max(holdBack, len)
+        break
+      }
+    }
+  }
+  // 砍掉尾部半截标签，避免显示 '[CO' 这类闪烁文本
+  const safePart = rawText.slice(0, rawText.length - holdBack)
+  // 移除所有完整标签
+  return safePart.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '')
+}
+
 // fragment.type → chunk kind 映射
 // 功能：把 Epitaxy fragment 的类型映射到 knowledge_chunks 表的 kind 枚举
 // 实现方式：existing_case→reference（案例≈引用）, concept→concept, warning→warning, blank→material
@@ -1775,9 +1840,12 @@ const useStore = create((set, get) => ({
   // 功能：灵感原文之后的追加思考时间线，支持文本/链接/图片 + 评论 + 对话探究
   //   - addenda：当前选中灵感的追加条目列表（含 comments 与 saved_replies）
   //   - conversationAddendumId：当前对话探究的追加条目 ID
-  //   - conversationMessages：对话消息流 [{ role, text, saved, replyId }]
+  //   - conversationMessages：对话消息流 [{ role, text, rawText, core, context, saved, replyId }]
+  //     v9：rawText 含 [CORE] 标签原文（供保存与重新解析），text 为显示文本（标签已隐藏）
+  //          core/context 为流末解析的分层字段（可空）
   //   - savedRepliesList：所有灵感的已保存回答（继续思考面板用）
-  //   - commentDraft：转为评论的草稿 { addendumId, content }，供 AddendumSection 监听
+  //   - commentDraft：转为评论的草稿 { addendumId, content, context }，供 AddendumSection 监听
+  //     v9：新增 context 字段（可空），来自 AI 回复的阐释部分，用于评论折叠展示
   addenda: [],
   addendaLoading: false,
   addendaError: null,
@@ -1859,14 +1927,16 @@ const useStore = create((set, get) => ({
 
   /**
    * 创建评论
+   *   v9：新增 context 参数（可空），用于评论折叠展示
    * @param {string} addendumId - 追加条目 ID
-   * @param {string} content - 评论内容
+   * @param {string} content - 评论核心文本
    * @param {string} inspirationId - 灵感 ID（用于刷新列表）
+   * @param {string} [context] - 评论展开/阐释部分（可空）
    */
-  createComment: async (addendumId, content, inspirationId) => {
+  createComment: async (addendumId, content, inspirationId, context) => {
     set({ addendaError: null })
     try {
-      await api.createComment(addendumId, content)
+      await api.createComment(inspirationId, addendumId, content, context)
       if (inspirationId) await get().loadAddenda(inspirationId)
     } catch (err) {
       set({ addendaError: err.message })
@@ -1875,14 +1945,16 @@ const useStore = create((set, get) => ({
 
   /**
    * 更新评论
+   *   v9：新增 context 参数（undefined 不更新该字段，null 清空）
    * @param {string} commentId - 评论 ID
-   * @param {string} content - 新评论内容
+   * @param {string} content - 新评论核心文本
    * @param {string} inspirationId - 灵感 ID（用于刷新列表）
+   * @param {string} [context] - 新评论展开/阐释部分（undefined 不更新，null 清空）
    */
-  updateComment: async (commentId, content, inspirationId) => {
+  updateComment: async (commentId, content, inspirationId, context) => {
     set({ addendaError: null })
     try {
-      await api.updateComment(commentId, content)
+      await api.updateComment(commentId, content, context)
       if (inspirationId) await get().loadAddenda(inspirationId)
     } catch (err) {
       set({ addendaError: err.message })
@@ -1908,6 +1980,7 @@ const useStore = create((set, get) => ({
    * 打开对话探究抽屉
    * 功能：设置 drawer='conversation'，从 addenda 中找到该 addendum 的 saved_replies，
    *   加载到 conversationMessages（question 作为 user 消息，answer 作为 saved ai 消息）
+   *   v9：每条 reply 携带 core/context 字段，并从 answer（含 [CORE] 标签原文）派生显示文本
    * @param {string} addendumId - 追加条目 ID
    */
   openConversation: (addendumId) => {
@@ -1919,9 +1992,15 @@ const useStore = create((set, get) => ({
       if (r.question) {
         messages.push({ role: 'user', text: r.question, saved: false })
       }
+      // v9：从 answer（可能含 [CORE] 标签）派生显示文本；若已存 core/context 直接复用
+      const rawText = r.answer || ''
+      const displayText = rawText.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '')
       messages.push({
         role: 'ai',
-        text: r.answer,
+        text: displayText,
+        rawText,
+        core: r.core || null,
+        context: r.context || null,
         saved: true,
         replyId: r.id
       })
@@ -1951,6 +2030,8 @@ const useStore = create((set, get) => ({
    * 对话探究：发送提问
    * 功能：把 question 追加到消息流，调用 API，把 AI answer 追加到消息流
    *   失败时回滚该轮提问（移除已追加的 user 消息）
+   *   v9：流式过程中维护 rawText（含 [CORE] 标签原文），text 由 computeDisplayText 派生（标签隐藏）
+   *        流结束 onDone 时解析出 core/context 存到消息上，供后续"转为评论/保存"使用
    * @param {string} question - 用户提问
    */
   askConversation: async (question) => {
@@ -1960,7 +2041,8 @@ const useStore = create((set, get) => ({
     const userMsg = { role: 'user', text: question, saved: false }
     const prevMessages = [...conversationMessages]
     // 同时追加一个空的 ai 消息占位（streaming:true 标记流式进行中），后续逐 delta 填充 text
-    const aiPlaceholder = { role: 'ai', text: '', saved: false, streaming: true }
+    // v9：rawText 累积含标签的原文，text 是派生的显示文本（标签已隐藏）
+    const aiPlaceholder = { role: 'ai', text: '', rawText: '', saved: false, streaming: true }
     set({
       conversationMessages: [...conversationMessages, userMsg, aiPlaceholder],
       conversationLoading: true,
@@ -1969,27 +2051,37 @@ const useStore = create((set, get) => ({
     try {
       // 构造 history：传给后端的是"占位 ai 之前"的完整历史（即 prevMessages）
       // 注意排除当前刚追加的 user 消息本身，避免 question 重复
-      const history = prevMessages.map((m) => ({ role: m.role, content: m.text }))
+      // v9：history.content 传 rawText（含标签），保持 AI 上下文完整；无 rawText 时回退 text
+      const history = prevMessages.map((m) => ({ role: m.role, content: m.rawText || m.text }))
 
-      // 流式回调：每个 delta 追加到最后一条 ai 消息的 text
+      // 流式回调：每个 delta 累积到 rawText，text 由 computeDisplayText 派生
       const onDelta = (chunk) => {
         const cur = get().conversationMessages
         const next = cur.map((m, i) =>
           i === cur.length - 1 && m.role === 'ai'
-            ? { ...m, text: m.text + chunk }
+            ? (() => {
+                const newRaw = (m.rawText || '') + chunk
+                return { ...m, rawText: newRaw, text: computeDisplayText(newRaw) }
+              })()
             : m
         )
         set({ conversationMessages: next })
       }
 
       const onDone = (_searchUsed) => {
-        // 流结束：清除最后一条 ai 的 streaming 标记，保留完整 text
+        // 流结束：清除最后一条 ai 的 streaming 标记；解析 core/context 存到消息上
         const cur = get().conversationMessages
-        const next = cur.map((m, i) =>
-          i === cur.length - 1 && m.role === 'ai'
-            ? { ...m, streaming: false }
-            : m
-        )
+        const next = cur.map((m, i) => {
+          if (i === cur.length - 1 && m.role === 'ai') {
+            const rawText = m.rawText || m.text || ''
+            // 流末无需 hold-back，直接移除完整标签作为显示文本
+            const displayText = rawText.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '')
+            // 解析 core/context，供"转为评论/保存到 DB"使用
+            const { core, context } = parseCoreContext(rawText)
+            return { ...m, streaming: false, text: displayText, core, context }
+          }
+          return m
+        })
         set({ conversationMessages: next, conversationLoading: false })
       }
 
@@ -2014,6 +2106,8 @@ const useStore = create((set, get) => ({
    * 保存对话回答到 DB（书签）
    * 功能：把 conversationMessages[messageIndex] 的 question+answer 存到 DB，
    *   标记 saved=true，存 replyId
+   *   v9：answer 保存 rawText（含 [CORE] 标签原文），同时保存 core/context 分层字段
+   *        这样从 DB 加载时无需重新解析，且 answer 保留可重新解析的原文
    * @param {number} messageIndex - AI 消息在 conversationMessages 中的索引
    */
   saveConversationReply: async (messageIndex) => {
@@ -2030,9 +2124,14 @@ const useStore = create((set, get) => ({
       }
     }
     try {
+      // v9：answer 存 rawText（含标签原文），core/context 为解析后的分层字段
+      // 若 rawText 缺失（旧消息回退），用 text 兜底，core/context 此时为 null
+      const rawText = aiMsg.rawText || aiMsg.text || ''
       const result = await api.saveReply(selectedInspiration.id, conversationAddendumId, {
         question,
-        answer: aiMsg.text
+        answer: rawText,
+        core: aiMsg.core || null,
+        context: aiMsg.context || null
       })
       if (result.success === false) {
         set({ conversationError: result.error || '保存失败' })
@@ -2103,11 +2202,13 @@ const useStore = create((set, get) => ({
   /**
    * 设置评论草稿（"转为评论"功能用）
    * 功能：把 AI 回答内容带到 AddendumSection 的评论输入框
+   *   v9：新增 context 参数 —— "转为评论"时把 AI 回答的 core 作为评论核心、context 作为折叠内容
    * @param {string} addendumId - 追加条目 ID
-   * @param {string} content - 评论内容
+   * @param {string} content - 评论核心文本（来自 AI 的 core 或文本兜底）
+   * @param {string} [context] - 评论展开/阐释部分（来自 AI 的 context，可空）
    */
-  setCommentDraft: (addendumId, content) => {
-    set({ commentDraft: { addendumId, content } })
+  setCommentDraft: (addendumId, content, context) => {
+    set({ commentDraft: { addendumId, content, context: context || null } })
   },
 
   /**

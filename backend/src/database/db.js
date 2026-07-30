@@ -27,7 +27,9 @@ const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 //       迁移历史数据：'概念命题' → '概念'，'argument_card' → 'concept_card'
 // v7：版本从 6 升到 7，新增追加条目功能（inspiration_addenda / addendum_comments / saved_ai_replies）
 // v8：版本从 7 升到 8，新增文件夹分组功能（folders 表 + inspirations.folder_id / sort_order）
-export const CURRENT_VERSION = 8;
+// v9：版本从 8 升到 9，新增评论分层字段（addendum_comments.context + saved_ai_replies.core/context）
+//      支持 AI 回复"核心观点 + 折叠展开"分层展示，旧数据 NULL 兼容
+export const CURRENT_VERSION = 9;
 
 // 数据库单例（initDb 完成后赋值）
 export let db = null;
@@ -101,6 +103,13 @@ SELECT 1;
     version: 8,
     name: 'v8_folders',
     // v8 SQL 部分仅记录版本号；实际建表 + ALTER 由 migrateV8 函数处理（见 migrations/v8_folders.js）
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 9,
+    name: 'v9_core_context',
+    // v9 SQL 部分仅记录版本号；实际 ALTER 由 migrateV9 函数处理（见 migrations/v9_core_context.js）
+    // 新增 addendum_comments.context、saved_ai_replies.core、saved_ai_replies.context 三列
     sql: 'SELECT 1;'
   }
 ];
@@ -454,6 +463,11 @@ async function runAllMigrations(database) {
       if (migration.version === 8) {
         const { migrateV8 } = await import('./migrations/v8_folders.js');
         migrateV8(database);
+      }
+      // v9 特殊处理：评论分层字段，为 addendum_comments 加 context，为 saved_ai_replies 加 core/context
+      if (migration.version === 9) {
+        const { migrateV9 } = await import('./migrations/v9_core_context.js');
+        migrateV9(database);
       }
       // 记录迁移版本（使用参数绑定防止注入）
       database.run(
