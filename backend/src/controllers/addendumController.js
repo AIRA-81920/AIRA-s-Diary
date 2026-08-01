@@ -13,11 +13,13 @@
 //   DELETE /comments/:commentId                               deleteComment
 //   POST   /inspirations/:id/addenda/:addendumId/replies      saveReply
 //   DELETE /replies/:replyId                                  deleteReply
+//   POST   /replies/:replyId/mark-converted                   markConverted (v10)
 //   GET    /addenda/saved-replies                             listAllSavedReplies
 //   POST   /addenda/upload-image                              uploadImage
 
 import * as addendumService from '../services/addendumService.js';
 import FingerprintService from '../services/fingerprintService.js';
+import { TaskQueue, TASK_KINDS } from '../services/taskQueue.js';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
@@ -76,8 +78,10 @@ export async function createAddendum(req, res) {
       return res.status(400).json({ success: false, error: 'content is required' });
     }
     const result = addendumService.createAddendum(id, { content, links, images });
-    // 内容变化后标记指纹 stale，下次 scan 会重算
+    // 内容变化后标记指纹 stale，并入队 FINGERPRINT 任务触发后台重算
+    // taskQueue 串行：FINGERPRINT → 自动 enqueue INCREMENTAL_SCAN，与 epitaxyController.distill 保持一致
     await FingerprintService.markStale(id);
+    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, id);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] createAddendum failed:', e.message);
@@ -100,7 +104,9 @@ export async function updateAddendum(req, res) {
       return res.status(404).json({ success: false, error: 'Addendum not found' });
     }
     const result = addendumService.updateAddendum(addendumId, { content, links, images });
+    // 反查 inspiration_id 用于 markStale + enqueue（与 epitaxyController.distill 一致）
     await FingerprintService.markStale(existing.inspiration_id);
+    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, existing.inspiration_id);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] updateAddendum failed:', e.message);
@@ -121,7 +127,9 @@ export async function deleteAddendum(req, res) {
       return res.status(404).json({ success: false, error: 'Addendum not found' });
     }
     const result = addendumService.deleteAddendum(addendumId);
+    // 删除触发指纹重算（追加内容是指纹第五源，删除后需重算）
     await FingerprintService.markStale(existing.inspiration_id);
+    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, existing.inspiration_id);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteAddendum failed:', e.message);
@@ -237,6 +245,27 @@ export async function deleteReply(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteReply failed:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+/**
+ * 标记已保存 AI 回答为"已转化为评论"（v10 新增）
+ * 功能：POST /replies/:replyId/mark-converted
+ *   触发场景：前端在 createComment 成功后调用，将源对话标记为已转化
+ *   效果：该条回复从"接着想"面板移除；再次进入对话窗口时折叠到"已处理历史"
+ * 实现方式：调 service.markReplyConverted 更新 converted=1
+ */
+export async function markConverted(req, res) {
+  try {
+    const { replyId } = req.params;
+    const result = addendumService.markReplyConverted(replyId);
+    if (!result.success) {
+      return res.status(404).json({ success: false, error: 'Reply not found' });
+    }
+    res.json({ success: true, data: result });
+  } catch (e) {
+    console.error('[AddendumController] markConverted failed:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 }

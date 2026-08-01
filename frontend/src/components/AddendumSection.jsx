@@ -34,6 +34,9 @@ function AddendumSection({ inspirationId }) {
   const openConversation = useStore((s) => s.openConversation)
   const commentDraft = useStore((s) => s.commentDraft)
   const clearCommentDraft = useStore((s) => s.clearCommentDraft)
+  // v10：commentSourceReplyId 独立于 commentDraft，不会被 onDraftConsumed 清空
+  // 用途：createComment 时透传给 store，触发 markReplyConverted 标记源对话
+  const commentSourceReplyId = useStore((s) => s.commentSourceReplyId)
 
   // 弹窗状态：null=关闭，{mode:'create'} 或 {mode:'edit', addendum}
   const [modalState, setModalState] = useState(null)
@@ -135,7 +138,9 @@ function AddendumSection({ inspirationId }) {
               onExplore={() => handleExplore(addendum)}
               commentDraft={commentDraft && commentDraft.addendumId === addendum.id ? commentDraft : null}
               onCommentDraftConsumed={clearCommentDraft}
-              onCreateComment={(content, context) => createComment(addendum.id, content, inspirationId, context)}
+              // v10：onCreateComment 透传 commentSourceReplyId（从 store 读取，不依赖 commentDraft）
+              // 此值在 setCommentDraft 时设置，在 createComment 末尾清空
+              onCreateComment={(content, context) => createComment(addendum.id, content, inspirationId, context, commentSourceReplyId)}
               onUpdateComment={(commentId, content, context) => updateComment(commentId, content, inspirationId, context)}
               onDeleteComment={(commentId) => deleteComment(commentId, inspirationId)}
             />

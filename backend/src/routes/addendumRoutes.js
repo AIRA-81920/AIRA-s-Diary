@@ -54,6 +54,11 @@ router.post('/inspirations/:id/addenda/:addendumId/replies', ctrl.saveReply);
 // 删除已保存的 AI 回答
 router.delete('/replies/:replyId', ctrl.deleteReply);
 
+// v10：标记已保存的 AI 回答为"已转化为评论"（createComment 成功后调用）
+// 注意：POST /replies/:replyId/mark-converted 是静态路径段 + 参数段，
+//       Express 按声明顺序匹配，DELETE /replies/:replyId 不会与 mark-converted 冲突（方法不同）
+router.post('/replies/:replyId/mark-converted', ctrl.markConverted);
+
 // ===== 对话端点 =====
 
 // 在某追加主帖下发起对话（向 AI 提问）

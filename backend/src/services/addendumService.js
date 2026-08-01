@@ -172,8 +172,9 @@ export function listAddenda(inspirationId) {
     }
     try {
       // v9：saved_replies 表新增 core / context 列（可空），用于 AI 回复分层展示
+      // v10：新增 converted 字段，前端 openConversation 用它区分"未转化（展开）"与"已转化（折叠到历史）"
       savedReplies = queryAll(
-        'SELECT id, question, answer, core, context, saved_at FROM saved_ai_replies WHERE addendum_id = ? ORDER BY saved_at ASC',
+        'SELECT id, question, answer, core, context, converted, saved_at FROM saved_ai_replies WHERE addendum_id = ? ORDER BY saved_at ASC',
         [row.id]
       );
     } catch (err) {
@@ -298,13 +299,13 @@ export function deleteReply(replyId) {
 /**
  * 列出某灵感下所有已保存 AI 回答
  * 功能：SELECT * FROM saved_ai_replies WHERE inspiration_id = ?，按 saved_at 降序
- * 实现方式：queryAll 参数化查询；v9 起新增 core/context 字段读取
+ * 实现方式：queryAll 参数化查询；v9 起新增 core/context 字段读取；v10 起新增 converted 字段
  * @param {string} inspirationId - 灵感 ID
  * @returns {Array<Object>} 已保存回答数组
  */
 export function listSavedRepliesByInspiration(inspirationId) {
   return queryAll(
-    'SELECT id, addendum_id, inspiration_id, question, answer, core, context, saved_at FROM saved_ai_replies WHERE inspiration_id = ? ORDER BY saved_at DESC',
+    'SELECT id, addendum_id, inspiration_id, question, answer, core, context, converted, saved_at FROM saved_ai_replies WHERE inspiration_id = ? ORDER BY saved_at DESC',
     [inspirationId]
   );
 }
@@ -319,11 +320,13 @@ export function listSavedRepliesByInspiration(inspirationId) {
  *   1. queryAll 主查询 LEFT JOIN 获取关联字段；v9 起读取 r.core / r.context
  *   2. 子查询 (SELECT COUNT(*) FROM addendum_comments WHERE addendum_id=...) 统计 comment_count
  *   3. excerpt 用 substr 截断到 200 字
+ *   4. v10：WHERE r.converted = 0 过滤已转化为评论的项（"接着想"只显示待处理项）
  * @returns {Array<Object>} 已保存回答摘要数组
  */
 export function listAllSavedReplies() {
   // LEFT JOIN 保证：即使灵感或追加主帖被删除（理论上 FK 会级联，这里防御性处理），仍能返回记录
   // v9：新增 r.core / r.context 字段，前端列表预览优先用 core，无 core 时降级用 answer
+  // v10：WHERE r.converted = 0 — 已转化的对话从"接着想"面板移除
   return queryAll(
     `SELECT
        r.id AS id,
@@ -340,8 +343,28 @@ export function listAllSavedReplies() {
      FROM saved_ai_replies r
      LEFT JOIN inspiration_addenda a ON r.addendum_id = a.id
      LEFT JOIN inspirations i ON r.inspiration_id = i.id
+     WHERE r.converted = 0
      ORDER BY r.saved_at DESC`
   );
+}
+
+/**
+ * 标记已保存的 AI 回答为"已转化为评论"
+ * 功能：UPDATE saved_ai_replies SET converted=1 WHERE id=?
+ *   触发时机：前端 createComment 成功后，若 store.commentSourceReplyId 有值，则调用本函数
+ *   效果：该条回复从"接着想"面板移除；再次进入对话窗口时折叠到"已处理历史"
+ * 实现方式：db.run 参数化更新，行不存在时返回 success:false
+ * @param {string} replyId - saved_ai_replies 的主键 ID
+ * @returns {{success: boolean}}
+ */
+export function markReplyConverted(replyId) {
+  const existing = queryOne('SELECT id FROM saved_ai_replies WHERE id = ?', [replyId]);
+  if (!existing) {
+    return { success: false };
+  }
+  db.run('UPDATE saved_ai_replies SET converted = 1 WHERE id = ?', [replyId]);
+  saveDb();
+  return { success: true };
 }
 
 /**

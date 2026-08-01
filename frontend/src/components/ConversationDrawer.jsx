@@ -9,7 +9,7 @@
 //   - 已保存消息可"转为评论"或删除
 //   - 底部提问框支持 Ctrl/Cmd+Enter 发送
 import React, { useState, useRef, useCallback, useEffect } from 'react'
-import { X, Bookmark, BookmarkCheck, Send, Loader2, MessageSquarePlus, Trash2 } from 'lucide-react'
+import { X, Bookmark, BookmarkCheck, Send, Loader2, MessageSquarePlus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
 import useStore from '../services/store.js'
 import StreamingMarkdown from './StreamingMarkdown.jsx'
 
@@ -30,6 +30,8 @@ function ConversationDrawer() {
   const setDrawerWidth = useStore((s) => s.setDrawerWidth)
   const conversationAddendumId = useStore((s) => s.conversationAddendumId)
   const conversationMessages = useStore((s) => s.conversationMessages)
+  // v10：已转化为评论的历史对话（默认折叠在抽屉底部）
+  const conversationConvertedHistory = useStore((s) => s.conversationConvertedHistory)
   const conversationLoading = useStore((s) => s.conversationLoading)
   const conversationError = useStore((s) => s.conversationError)
   const addenda = useStore((s) => s.addenda)
@@ -37,6 +39,9 @@ function ConversationDrawer() {
   const saveConversationReply = useStore((s) => s.saveConversationReply)
   const unsaveConversationReply = useStore((s) => s.unsaveConversationReply)
   const setCommentDraft = useStore((s) => s.setCommentDraft)
+
+  // v10：历史区折叠状态（默认折叠，用户点击展开查看已处理历史）
+  const [historyCollapsed, setHistoryCollapsed] = useState(true)
 
   // 拖拽状态
   const [dragging, setDragging] = useState(false)
@@ -143,15 +148,18 @@ function ConversationDrawer() {
 
   /** "转为评论"：把 AI 回答内容带到 AddendumSection 的评论输入框
    *  v9：优先把 core 作为评论核心文本，context 作为折叠的阐释部分；
-   *      AI 未标记 [CORE] 时，用完整显示文本作为评论核心，无折叠部分 */
+   *      AI 未标记 [CORE] 时，用完整显示文本作为评论核心，无折叠部分
+   *  v10：传 msg.replyId 作为 sourceReplyId，store.createComment 用它调 markReplyConverted */
   const handleConvertToComment = (index) => {
     const msg = conversationMessages[index]
     if (!msg || !conversationAddendumId) return
+    console.log('[ConversationDrawer] handleConvertToComment called:', { index, replyId: msg.replyId, hasCore: !!msg.core })
     // 有 core：core 作 content，context 作折叠部分；无 core：text 作 content，无折叠
+    // v10：第四个参数 sourceReplyId = msg.replyId（已保存消息必带 replyId）
     if (msg.core) {
-      setCommentDraft(conversationAddendumId, msg.core, msg.context)
+      setCommentDraft(conversationAddendumId, msg.core, msg.context, msg.replyId)
     } else {
-      setCommentDraft(conversationAddendumId, msg.text || '', null)
+      setCommentDraft(conversationAddendumId, msg.text || '', null, msg.replyId)
     }
   }
 
@@ -302,6 +310,52 @@ function ConversationDrawer() {
           </div>
         )}
 
+        {/* v10："已处理历史"折叠区 — 已转化为评论的对话默认折叠在此 */}
+        {conversationConvertedHistory.length > 0 && (
+          <div className="space-y-2 mt-4">
+            {/* 折叠/展开按钮（默认折叠） */}
+            <button
+              type="button"
+              onClick={() => setHistoryCollapsed((v) => !v)}
+              className="w-full flex items-center gap-2 py-1.5 group"
+            >
+              <span className="text-ink/40 group-hover:text-ink/70 transition-colors flex-shrink-0">
+                {historyCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+              </span>
+              <span className="text-ink/30 text-[10px] uppercase tracking-widest font-sans">
+                已处理历史（{Math.floor(conversationConvertedHistory.filter((m) => m.role === 'ai').length)} 轮）
+              </span>
+              <div className="h-px flex-1 bg-veil/5" />
+              <span className="text-ink/20 text-[10px] font-sans group-hover:text-ink/40 transition-colors flex-shrink-0">
+                {historyCollapsed ? '查看' : '收起'}
+              </span>
+            </button>
+            {/* 折叠内容（max-height + opacity 过渡，与评论区展开保持一致风格） */}
+            <div
+              className="overflow-hidden"
+              style={{
+                maxHeight: historyCollapsed ? '0px' : '2000px',
+                opacity: historyCollapsed ? 0 : 1,
+                transition: 'max-height 400ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms ease'
+              }}
+            >
+              {/* 历史消息列表（灰色、半透明，无操作按钮） */}
+              <div className="space-y-2 opacity-50 pt-2">
+                {conversationConvertedHistory.map((msg, index) => (
+                  <MessageBubble
+                    key={`history-${index}`}
+                    msg={msg}
+                    index={-1 - index}
+                    accent={CONVERSATION_ACCENT}
+                    isHistory={true}
+                  />
+                ))}
+                <div className="h-px bg-veil/5 mt-3" />
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* 滚动锚点 */}
         <div ref={messagesEndRef} />
       </div>
@@ -385,8 +439,9 @@ function ConversationDrawer() {
 /**
  * MessageBubble 单条消息气泡
  * 功能：展示角色标签 + 文本 + 书签按钮，已保存消息额外显示"转为评论"和"删除"
+ *   v10：新增 isHistory 属性 — 历史消息（已转化）隐藏所有操作按钮，只读展示
  */
-function MessageBubble({ msg, index, accent, onBookmark, onConvertToComment }) {
+function MessageBubble({ msg, index, accent, onBookmark, onConvertToComment, isHistory = false }) {
   const isUser = msg.role === 'user'
   return (
     <div className={`flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
@@ -413,8 +468,8 @@ function MessageBubble({ msg, index, accent, onBookmark, onConvertToComment }) {
           // AI 消息用流式 Markdown 渲染：streaming 标记来自 store，流式中显示光标
           <StreamingMarkdown text={msg.text} streaming={!!msg.streaming} />
         )}
-        {/* AI 消息的书签 + 操作按钮 */}
-        {!isUser && (
+        {/* AI 消息的书签 + 操作按钮（历史消息隐藏，只读展示） */}
+        {!isUser && !isHistory && (
           <div className="flex items-center gap-1 mt-1.5 pt-1.5 border-t border-line/5 opacity-60 group-hover:opacity-100 transition-opacity">
             {/* 书签按钮 */}
             <button

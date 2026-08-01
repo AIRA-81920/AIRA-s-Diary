@@ -1843,20 +1843,29 @@ const useStore = create((set, get) => ({
   //   - conversationMessages：对话消息流 [{ role, text, rawText, core, context, saved, replyId }]
   //     v9：rawText 含 [CORE] 标签原文（供保存与重新解析），text 为显示文本（标签已隐藏）
   //          core/context 为流末解析的分层字段（可空）
-  //   - savedRepliesList：所有灵感的已保存回答（继续思考面板用）
+  //   - conversationConvertedHistory：已转化为评论的历史对话（v10 新增）
+  //     来源：openConversation 时从 saved_replies 中分离出 converted=1 的项
+  //     用途：在对话抽屉底部以折叠形式展示，保留可追溯性但不干扰当前对话流
+  //   - savedRepliesList：所有灵感的已保存回答（继续思考面板用，仅含 converted=0）
   //   - commentDraft：转为评论的草稿 { addendumId, content, context }，供 AddendumSection 监听
   //     v9：新增 context 字段（可空），来自 AI 回复的阐释部分，用于评论折叠展示
+  //   - commentSourceReplyId：转为评论时关联的源对话 ID（v10 新增，独立于 commentDraft）
+  //     设计原因：commentDraft 会被 onDraftConsumed 立即清空，无法在 createComment 时再读取；
+  //               独立字段避免被 CommentInput 的 useEffect 生命周期影响
+  //     用途：createComment 成功后调 markReplyConverted(commentSourceReplyId) 标记源对话
   addenda: [],
   addendaLoading: false,
   addendaError: null,
   conversationAddendumId: null,
   conversationMessages: [],
+  conversationConvertedHistory: [],
   conversationLoading: false,
   conversationError: null,
   savedRepliesList: [],
   savedRepliesLoading: false,
   showContinueThinking: false,
   commentDraft: null,
+  commentSourceReplyId: null,
 
   /**
    * 加载追加条目列表
@@ -1928,17 +1937,54 @@ const useStore = create((set, get) => ({
   /**
    * 创建评论
    *   v9：新增 context 参数（可空），用于评论折叠展示
+   *   v10：新增 sourceReplyId 参数 — 评论来源的 saved_ai_replies ID
+   *        评论创建成功后调 markReplyConverted 标记源对话为"已转化"，
+   *        让该条回复从"接着想"面板移除，并在再次进入对话窗口时折叠到"已处理历史"
+   *        设计要点：sourceReplyId 不依赖 commentDraft（后者会被 onDraftConsumed 立即清空），
+   *                  而是作为参数显式传入，保证标记链路可靠执行
    * @param {string} addendumId - 追加条目 ID
    * @param {string} content - 评论核心文本
    * @param {string} inspirationId - 灵感 ID（用于刷新列表）
    * @param {string} [context] - 评论展开/阐释部分（可空）
+   * @param {string} [sourceReplyId] - 源对话 ID（v10，可空；非空时触发标记转化）
    */
-  createComment: async (addendumId, content, inspirationId, context) => {
+  createComment: async (addendumId, content, inspirationId, context, sourceReplyId) => {
     set({ addendaError: null })
+    // v10 全链路跟踪：打印关键参数，便于调试时确认 sourceReplyId 是否成功传递
+    console.log('[Store] createComment called:', { addendumId, content: content?.slice(0, 30), inspirationId, hasContext: !!context, sourceReplyId })
     try {
+      // 步骤 1：创建评论（核心步骤，失败则直接抛错）
       await api.createComment(inspirationId, addendumId, content, context)
+      console.log('[Store] createComment: api.createComment succeeded')
+
+      // 步骤 2：若有 sourceReplyId，标记源对话为"已转化"
+      // 注意：此处不依赖 commentDraft（可能已被清空），直接用参数 sourceReplyId
+      if (sourceReplyId) {
+        console.log('[Store] createComment: marking reply converted, replyId =', sourceReplyId)
+        try {
+          const markResult = await api.markReplyConverted(sourceReplyId)
+          console.log('[Store] markReplyConverted succeeded:', markResult)
+          // 步骤 3：刷新"接着想"面板数据（让已转化项从列表中移除）
+          // loadSavedReplies 后端已 WHERE converted=0 过滤，刷新后即从 UI 移除
+          await get().loadSavedReplies()
+          console.log('[Store] loadSavedReplies refreshed after conversion')
+        } catch (markErr) {
+          // 标记失败不阻塞评论创建（评论已成功写入），但显式记录错误供用户感知
+          // 上一轮失败原因之一是 console.warn 静默吞错；此处改为 console.error 并 set addendaError
+          console.error('[Store] markReplyConverted FAILED:', markErr.message)
+          set({ addendaError: `评论已创建，但标记转化失败：${markErr.message}` })
+        }
+      } else {
+        console.log('[Store] createComment: no sourceReplyId, skipping markReplyConverted')
+      }
+
+      // 步骤 4：清空 commentSourceReplyId（无论是否标记成功，避免下次评论误用旧值）
+      set({ commentSourceReplyId: null })
+
+      // 步骤 5：刷新 addenda 列表（让新评论出现在 AddendumSection 中）
       if (inspirationId) await get().loadAddenda(inspirationId)
     } catch (err) {
+      console.error('[Store] createComment FAILED:', err.message)
       set({ addendaError: err.message })
     }
   },
@@ -1979,23 +2025,27 @@ const useStore = create((set, get) => ({
   /**
    * 打开对话探究抽屉
    * 功能：设置 drawer='conversation'，从 addenda 中找到该 addendum 的 saved_replies，
-   *   加载到 conversationMessages（question 作为 user 消息，answer 作为 saved ai 消息）
+   *   按 converted 字段分组：
+   *     - converted=0（未转化）：展开显示在 conversationMessages 主消息流
+   *     - converted=1（已转化）：折叠到 conversationConvertedHistory 历史区
    *   v9：每条 reply 携带 core/context 字段，并从 answer（含 [CORE] 标签原文）派生显示文本
+   *   v10：新增 converted 分组逻辑，未转化对话默认展开，已转化对话默认折叠
    * @param {string} addendumId - 追加条目 ID
    */
   openConversation: (addendumId) => {
     const addendum = get().addenda.find((a) => a.id === addendumId)
     const replies = addendum?.saved_replies || []
-    // 把 saved_replies 展开为消息流：每条 reply 生成 user + ai 两条消息
-    const messages = []
+    // 把 saved_replies 按 converted 分组
+    // 未转化（converted=0 或 undefined）：展开在主消息流
+    // 已转化（converted=1）：折叠到历史区
+    const activeMessages = []
+    const convertedHistory = []
     for (const r of replies) {
-      if (r.question) {
-        messages.push({ role: 'user', text: r.question, saved: false })
-      }
       // v9：从 answer（可能含 [CORE] 标签）派生显示文本；若已存 core/context 直接复用
       const rawText = r.answer || ''
       const displayText = rawText.replace(/\[CORE\]/g, '').replace(/\[\/CORE\]/g, '')
-      messages.push({
+      const userMsg = r.question ? { role: 'user', text: r.question, saved: false } : null
+      const aiMsg = {
         role: 'ai',
         text: displayText,
         rawText,
@@ -2003,12 +2053,21 @@ const useStore = create((set, get) => ({
         context: r.context || null,
         saved: true,
         replyId: r.id
-      })
+      }
+      // v10：按 converted 字段分组
+      if (r.converted === 1) {
+        if (userMsg) convertedHistory.push(userMsg)
+        convertedHistory.push(aiMsg)
+      } else {
+        if (userMsg) activeMessages.push(userMsg)
+        activeMessages.push(aiMsg)
+      }
     }
     set({
       drawer: 'conversation',
       conversationAddendumId: addendumId,
-      conversationMessages: messages,
+      conversationMessages: activeMessages,
+      conversationConvertedHistory: convertedHistory,
       conversationError: null,
       sidebarCompressed: true
     })
@@ -2022,7 +2081,8 @@ const useStore = create((set, get) => ({
     get().closeDrawer()
     set({
       conversationAddendumId: null,
-      conversationMessages: []
+      conversationMessages: [],
+      conversationConvertedHistory: []
     })
   },
 
@@ -2203,16 +2263,29 @@ const useStore = create((set, get) => ({
    * 设置评论草稿（"转为评论"功能用）
    * 功能：把 AI 回答内容带到 AddendumSection 的评论输入框
    *   v9：新增 context 参数 —— "转为评论"时把 AI 回答的 core 作为评论核心、context 作为折叠内容
+   *   v10：新增 sourceReplyId 参数 —— 同步设置 commentSourceReplyId，供 createComment 标记转化
+   *        设计原因：commentDraft 会被 CommentInput 的 useEffect 立即调 onDraftConsumed 清空，
+   *                  无法在 createComment 时再从 commentDraft 读取 replyId；
+   *                  独立字段 commentSourceReplyId 不被清空，createComment 末尾显式清空
    * @param {string} addendumId - 追加条目 ID
    * @param {string} content - 评论核心文本（来自 AI 的 core 或文本兜底）
    * @param {string} [context] - 评论展开/阐释部分（来自 AI 的 context，可空）
+   * @param {string} [sourceReplyId] - 源对话 ID（v10，可空；用于标记转化）
    */
-  setCommentDraft: (addendumId, content, context) => {
-    set({ commentDraft: { addendumId, content, context: context || null } })
+  setCommentDraft: (addendumId, content, context, sourceReplyId) => {
+    console.log('[Store] setCommentDraft called:', { addendumId, hasContent: !!content, hasContext: !!context, sourceReplyId })
+    set({
+      commentDraft: { addendumId, content, context: context || null },
+      commentSourceReplyId: sourceReplyId || null
+    })
   },
 
   /**
    * 清空评论草稿
+   *   v10：仅清空 commentDraft，不清空 commentSourceReplyId
+   *        原因：CommentInput 的 useEffect 在预填后会立即调本函数清空 commentDraft，
+   *              但 createComment 仍需要 commentSourceReplyId，故此处保留；
+   *              commentSourceReplyId 在 createComment 末尾显式清空
    */
   clearCommentDraft: () => {
     set({ commentDraft: null })

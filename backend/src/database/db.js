@@ -29,7 +29,9 @@ const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 // v8：版本从 7 升到 8，新增文件夹分组功能（folders 表 + inspirations.folder_id / sort_order）
 // v9：版本从 8 升到 9，新增评论分层字段（addendum_comments.context + saved_ai_replies.core/context）
 //      支持 AI 回复"核心观点 + 折叠展开"分层展示，旧数据 NULL 兼容
-export const CURRENT_VERSION = 9;
+// v10：版本从 9 升到 10，新增 saved_ai_replies.converted 字段
+//      标记已保存回答是否已被"转为评论"，用于"接着想"过滤与对话窗口折叠历史区
+export const CURRENT_VERSION = 10;
 
 // 数据库单例（initDb 完成后赋值）
 export let db = null;
@@ -110,6 +112,13 @@ SELECT 1;
     name: 'v9_core_context',
     // v9 SQL 部分仅记录版本号；实际 ALTER 由 migrateV9 函数处理（见 migrations/v9_core_context.js）
     // 新增 addendum_comments.context、saved_ai_replies.core、saved_ai_replies.context 三列
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 10,
+    name: 'v10_converted',
+    // v10 SQL 部分仅记录版本号；实际 ALTER 由 migrateV10 函数处理（见 migrations/v10_converted.js）
+    // 新增 saved_ai_replies.converted INTEGER NOT NULL DEFAULT 0
     sql: 'SELECT 1;'
   }
 ];
@@ -468,6 +477,11 @@ async function runAllMigrations(database) {
       if (migration.version === 9) {
         const { migrateV9 } = await import('./migrations/v9_core_context.js');
         migrateV9(database);
+      }
+      // v10 特殊处理：saved_ai_replies 加 converted 列，标记已转化为评论的对话
+      if (migration.version === 10) {
+        const { migrateV10 } = await import('./migrations/v10_converted.js');
+        migrateV10(database);
       }
       // 记录迁移版本（使用参数绑定防止注入）
       database.run(

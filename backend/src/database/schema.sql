@@ -220,6 +220,7 @@ CREATE TABLE IF NOT EXISTS saved_ai_replies (
   answer TEXT NOT NULL,             -- AI 的完整回答（含 [CORE] 标签的原文）
   core TEXT,                        -- AI 回答的核心观点（[CORE] 标签内容，可空）
   context TEXT,                     -- AI 回答的阐释/展开部分（标签外的内容，可空）
+  converted INTEGER NOT NULL DEFAULT 0,  -- v10：是否已转化为评论（0=未转化，1=已转化）
   saved_at DATETIME NOT NULL,       -- 保存时间
   FOREIGN KEY (addendum_id) REFERENCES inspiration_addenda(id) ON DELETE CASCADE
 );

@@ -543,6 +543,20 @@ export function deleteReply(replyId) {
 }
 
 /**
+ * 标记已保存的对话回答为"已转化为评论"（v10 新增）
+ * 功能：前端 createComment 成功后调用，让该条回复从"接着想"面板移除，
+ *       并在再次进入对话窗口时折叠到"已处理历史"区
+ * @param {string} replyId - 回答 ID
+ * @returns {Promise<{success: boolean, data: object}>}
+ */
+// 路径与后端 POST /replies/:replyId/mark-converted 对齐
+export function markReplyConverted(replyId) {
+  return request(`/replies/${replyId}/mark-converted`, {
+    method: 'POST'
+  })
+}
+
+/**
  * 获取所有灵感的已保存对话回答（继续思考面板用）
  * @returns {Promise<{success: boolean, data: Array}>}
  */
@@ -810,6 +824,7 @@ export default {
   deleteComment,
   saveReply,
   deleteReply,
+  markReplyConverted,
   listAllSavedReplies,
   askConversation,
   askConversationStream,
