@@ -71,7 +71,10 @@ export function getInspiration(id) {
 
 /**
  * 创建灵感
- * @param {object} data - { title, content, source_type, source_url }
+ * @param {object} data - { title, content, source_type, source_url, source_files?, distill? }
+ *   - v11 多模态扩展：
+ *   -   source_files: 数组，新建灵感附带的源文件元数据（由 uploadInspirationFiles 上传后获得）
+ *   -   distill: boolean，true 时后端 enqueue(DISTILL) 任务回填 title + content
  * @returns {Promise<{success: boolean, data: object}>}
  */
 export function createInspiration(data) {
@@ -85,6 +88,8 @@ export function createInspiration(data) {
  * 更新灵感
  * @param {string} id
  * @param {object} data - 待更新字段
+ *   - v11 多模态扩展：支持 title_ai_generated（0|1）、content_ai_generated（0|1）
+ *   - 注意：ai_generated 翻转不触发 FINGERPRINT 任务（后端 controller 区分）
  * @returns {Promise<{success: boolean, data: object}>}
  */
 export function updateInspiration(id, data) {
@@ -436,7 +441,12 @@ export function listAddenda(inspirationId) {
 /**
  * 创建追加条目
  * @param {string} inspirationId - 灵感 ID
- * @param {object} data - { content, links, images }
+ * @param {object} data - { content, links, images?, files? }
+ *   - v11 多模态扩展：
+ *   -   images: 对象数组 [{filename, description, status}]，status 可为 'generating'|'ready'|'confirmed'|'failed'
+ *   -     status='generating' 的条目由后端自动 enqueue(VISION) 任务识图
+ *   -   files: 数组，追加条目附带的文本文件元数据（由 uploadAddendumFile 上传后获得）
+ *   -   注意：后端单类型校验——images 与 files 不可同时非空
  * @returns {Promise<{success: boolean, data: object}>}
  */
 export function createAddendum(inspirationId, data) {
@@ -449,7 +459,9 @@ export function createAddendum(inspirationId, data) {
 /**
  * 更新追加条目
  * @param {string} addendumId - 追加条目 ID
- * @param {object} data - { content, links, images }
+ * @param {object} data - { content, links, images?, files? }
+ *   - v11 多模态扩展：字段含义同 createAddendum
+ *   - 注意：后端单类型校验——images 与 files 不可同时非空
  * @returns {Promise<{success: boolean, data: object}>}
  */
 export function updateAddendum(addendumId, data) {
@@ -696,6 +708,91 @@ export async function uploadAddendumImage(file) {
   return JSON.parse(text)
 }
 
+/**
+ * 上传追加条目文本文件（v11 多模态扩展）
+ * 功能：POST /addenda/upload-file，单文件 .md/.txt 上传，存 uploads/addenda/
+ * 实现方式：用 FormData 直接 fetch（不走 request 封装，避免 Content-Type 被设为 JSON）
+ *   - 字段名 file，与后端 multer.single('file') 对齐
+ *   - 浏览器自动设置 multipart/form-data; boundary=...，无需手动指定 Content-Type
+ * @param {File} file - 文本文件（.md 或 .txt，<=500KB）
+ * @returns {Promise<{success: boolean, data: { filename, original_name, size, url }}>}
+ */
+export async function uploadAddendumFile(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const res = await fetch(`${BASE_URL}/addenda/upload-file`, {
+    method: 'POST',
+    body: formData
+  })
+  // 非 ok 响应：尝试提取后端错误信息后抛出
+  if (!res.ok) {
+    let errMsg = `上传失败：HTTP ${res.status}`
+    try {
+      const errBody = await res.json()
+      errMsg = errBody.error || errBody.message || errMsg
+    } catch {
+      // 非 JSON 错误保留默认信息
+    }
+    throw new Error(errMsg)
+  }
+  // 处理空响应体（理论不会出现，但保持与 uploadAddendumImage 一致的健壮性）
+  const text = await res.text()
+  if (!text) return {}
+  return JSON.parse(text)
+}
+
+/**
+ * 上传新建灵感的源文件（v11 多模态扩展）
+ * 功能：POST /inspirations/:id/files，多文件 .md/.txt 上传，存 uploads/neoidea/（供 DISTILL 任务读取）
+ * 实现方式：用 FormData 直接 fetch（不走 request 封装，避免 Content-Type 被设为 JSON）
+ *   - 字段名 files（多文件），与后端 multer.array('files', 10) 对齐，最多 10 个
+ *   - 浏览器自动设置 multipart/form-data; boundary=...，无需手动指定 Content-Type
+ * @param {string} inspirationId - 灵感 ID（先 createInspiration 拿到 id 再上传）
+ * @param {File[]} files - 文本文件数组（.md 或 .txt，每个 <=500KB）
+ * @returns {Promise<{success: boolean, data: Array<{filename, original_name, size, url}>}>}
+ */
+export async function uploadInspirationFiles(inspirationId, files) {
+  const formData = new FormData()
+  // 多文件用同一字段名逐个 append（FormData 规范允许同字段多次追加，后端 multer.array 解析为数组）
+  for (const file of files) {
+    formData.append('files', file)
+  }
+  const res = await fetch(`${BASE_URL}/inspirations/${inspirationId}/files`, {
+    method: 'POST',
+    body: formData
+  })
+  // 非 ok 响应：尝试提取后端错误信息后抛出
+  if (!res.ok) {
+    let errMsg = `上传失败：HTTP ${res.status}`
+    try {
+      const errBody = await res.json()
+      errMsg = errBody.error || errBody.message || errMsg
+    } catch {
+      // 非 JSON 错误保留默认信息
+    }
+    throw new Error(errMsg)
+  }
+  // 处理空响应体（理论不会出现，但保持与 uploadAddendumImage 一致的健壮性）
+  const text = await res.text()
+  if (!text) return {}
+  return JSON.parse(text)
+}
+
+/**
+ * 手动触发 DISTILL 任务（v11 多模态扩展）
+ * 功能：POST /inspirations/:id/distill，校验灵感存在 → enqueue(DISTILL) → 后台回填 title + content
+ * 实现方式：走 request 封装（JSON body），传空对象 {}（后端不读 body，仅校验灵感存在并入队）
+ *   - 用于"重试提炼"场景：首次 distill 失败或灵感 title 仍为 Loading 时手动重试
+ * @param {string} inspirationId - 灵感 ID
+ * @returns {Promise<{success: boolean, data: { queued: boolean }}>}
+ */
+export function triggerDistill(inspirationId) {
+  return request(`/inspirations/${inspirationId}/distill`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  })
+}
+
 // ========== 文件夹 API（v8 新增） ==========
 
 /**
@@ -829,6 +926,9 @@ export default {
   askConversation,
   askConversationStream,
   uploadAddendumImage,
+  uploadAddendumFile,
+  uploadInspirationFiles,
+  triggerDistill,
   getFolders,
   createFolder,
   updateFolder,

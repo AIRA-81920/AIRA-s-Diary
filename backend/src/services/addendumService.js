@@ -6,6 +6,8 @@
 //   3. 可预期错误（如 JSON 解析失败、子表查询失败）静默降级返回 null/[]，业务错误 throw
 //   4. 所有方法均为命名导出 + 末尾 export default 聚合，与 inspirationStorage.js 风格一致
 
+import fs from 'fs/promises';
+import path from 'path';
 import { db, saveDb } from '../database/db.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -62,20 +64,60 @@ function parseJsonArray(jsonStr) {
 }
 
 /**
+ * 解析 images_json 为 AddendumImage[] 对象数组（v11 新增）
+ * 功能：兼容 v7-v10 旧字符串数组格式，统一升级为对象数组；对象数组原样返回；解析失败返回 []
+ * 实现方式：
+ *   1. JSON.parse 解析字符串；非字符串 / 解析失败 / 非数组都返回 []
+ *   2. 遍历元素：string 视为旧格式（filename-only），升级为 {filename, description:'', status:'confirmed'}
+ *      （旧图片早已落盘且无描述，按"已确认"语义处理）
+ *   3. object 元素原样返回，由调用方保证字段符合 AddendumImage 形状
+ * @typedef {Object} AddendumImage
+ * @property {string} filename - 落盘文件名（UUID + 扩展名）
+ * @property {string} description - 图片描述（可空字符串）
+ * @property {string} status - 状态：'confirmed' | 'ready' | ...（业务自定义）
+ * @param {string} jsonStr - images_json 字段值
+ * @returns {AddendumImage[]} 图片对象数组
+ */
+export function parseImageArray(jsonStr) {
+  // 非字符串或空值直接返回空数组
+  if (!jsonStr || typeof jsonStr !== 'string') return [];
+  let arr;
+  try {
+    arr = JSON.parse(jsonStr);
+  } catch (err) {
+    // 解析失败不阻塞业务，降级为空数组
+    console.warn(`[AddendumService] images_json parse failed: ${err.message}`);
+    return [];
+  }
+  if (!Array.isArray(arr)) return [];
+  // 遍历元素：string 视为旧格式升级为对象，object 原样保留
+  return arr.map((item) => {
+    if (typeof item === 'string') {
+      // 旧字符串数组：仅含 filename，升级为 v11 对象格式
+      return { filename: item, description: '', status: 'confirmed' };
+    }
+    // 对象数组原样返回（调用方保证字段形状）
+    return item;
+  });
+}
+
+/**
  * 创建追加主帖
  * 功能：向 inspiration_addenda 表插入一条新记录
- * 实现方式：db.run 参数化插入，links/images 数组转 JSON 字符串存储
+ * 实现方式：db.run 参数化插入，links/images/files 数组转 JSON 字符串存储
+ *   - v11：新增 files 字段，写入 files_json（[{filename, original_name, size}]）
+ *   - v11：images 升级为对象数组（[{filename, description, status}]），写入 images_json
  * @param {string} inspirationId - 灵感 ID
- * @param {{content: string, links?: Array, images?: Array}} data - 主帖内容
+ * @param {{content: string, links?: Array, images?: Array, files?: Array}} data - 主帖内容
  * @returns {{id: string}} 新建记录的 ID
  */
-export function createAddendum(inspirationId, { content, links = [], images = [] }) {
+export function createAddendum(inspirationId, { content, links = [], images = [], files = [] }) {
   const id = uuidv4();
   const now = new Date().toISOString();
   db.run(
-    `INSERT INTO inspiration_addenda (id, inspiration_id, content, links_json, images_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
-    [id, inspirationId, content, JSON.stringify(links), JSON.stringify(images), now]
+    `INSERT INTO inspiration_addenda (id, inspiration_id, content, links_json, images_json, files_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, inspirationId, content, JSON.stringify(links), JSON.stringify(images), JSON.stringify(files), now]
   );
   saveDb();
   return { id };
@@ -83,13 +125,15 @@ export function createAddendum(inspirationId, { content, links = [], images = []
 
 /**
  * 更新追加主帖
- * 功能：UPDATE content/links_json/images_json/updated_at
+ * 功能：UPDATE content/links_json/images_json/files_json/updated_at
  * 实现方式：db.run 参数化更新，行不存在时静默返回 success:false
+ *   - v11：新增 files 字段写入 files_json（[{filename, original_name, size}]）
+ *   - v11：images 升级为对象数组（[{filename, description, status}]），写入 images_json
  * @param {string} addendumId - 追加主帖 ID
- * @param {{content?: string, links?: Array, images?: Array}} data - 待更新字段
+ * @param {{content?: string, links?: Array, images?: Array, files?: Array}} data - 待更新字段
  * @returns {{success: boolean}}
  */
-export function updateAddendum(addendumId, { content, links, images }) {
+export function updateAddendum(addendumId, { content, links, images, files }) {
   // 先查询行是否存在，便于返回明确的成功/失败
   const existing = queryOne('SELECT id FROM inspiration_addenda WHERE id = ?', [addendumId]);
   if (!existing) {
@@ -110,6 +154,10 @@ export function updateAddendum(addendumId, { content, links, images }) {
   if (images !== undefined) {
     sets.push('images_json = ?');
     params.push(JSON.stringify(images));
+  }
+  if (files !== undefined) {
+    sets.push('files_json = ?');
+    params.push(JSON.stringify(files));
   }
   if (sets.length === 0) {
     // 无字段需要更新
@@ -144,7 +192,9 @@ export function deleteAddendum(addendumId) {
  * 列出某灵感下所有追加主帖（含评论与已保存 AI 回答的嵌套结构）
  * 功能：SELECT 所有追加主帖 → 对每条再查 comments 和 saved_replies → 组装嵌套结构
  * 实现方式：queryAll 主表 → 逐条 queryAll 子表 → JSON 字段解析回数组
- * 返回结构：{ id, inspiration_id, content, links:[], images:[], created_at, updated_at,
+ *   - v11：images 用 parseImageArray 解析（兼容旧字符串数组升级为对象数组）
+ *   - v11：files_json 用 parseJsonArray 解析为 [{filename, original_name, size}]
+ * 返回结构：{ id, inspiration_id, content, links:[], images:[], files:[], created_at, updated_at,
  *            comments:[{id,content,context,created_at,updated_at}],
  *            saved_replies:[{id,question,answer,core,context,saved_at}] }
  * @param {string} inspirationId - 灵感 ID
@@ -152,8 +202,9 @@ export function deleteAddendum(addendumId) {
  */
 export function listAddenda(inspirationId) {
   // 查询所有追加主帖（按创建时间升序，时间线日志的默认顺序）
+  // v11：SELECT 增加 files_json 列
   const addenda = queryAll(
-    'SELECT id, inspiration_id, content, links_json, images_json, created_at, updated_at FROM inspiration_addenda WHERE inspiration_id = ? ORDER BY created_at ASC',
+    'SELECT id, inspiration_id, content, links_json, images_json, files_json, created_at, updated_at FROM inspiration_addenda WHERE inspiration_id = ? ORDER BY created_at ASC',
     [inspirationId]
   );
   // 逐条查询子表并组装嵌套结构
@@ -185,7 +236,10 @@ export function listAddenda(inspirationId) {
       inspiration_id: row.inspiration_id,
       content: row.content,
       links: parseJsonArray(row.links_json),
-      images: parseJsonArray(row.images_json),
+      // v11：images 升级为对象数组，旧字符串数组会被 parseImageArray 自动升级
+      images: parseImageArray(row.images_json),
+      // v11：files 为文本文件元数据数组 [{filename, original_name, size}]
+      files: parseJsonArray(row.files_json),
       created_at: row.created_at,
       updated_at: row.updated_at,
       comments,
@@ -375,10 +429,70 @@ export function markReplyConverted(replyId) {
  * @returns {Object|null}
  */
 export function getAddendumById(addendumId) {
+  // v11：SELECT 补充 files_json 列，供 controller 级联删除文件时使用
   return queryOne(
-    'SELECT id, inspiration_id, content, links_json, images_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
+    'SELECT id, inspiration_id, content, links_json, images_json, files_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
     [addendumId]
   );
+}
+
+/**
+ * 读取追加条目携带的参考文件内容（对话注入用）
+ * 功能：查 inspiration_addenda.files_json → 逐个读取 uploads/addenda/ 下的文件文本 → 返回带 content 的数组
+ * 实现方式：
+ *   1. queryOne 读 files_json 字段
+ *   2. JSON.parse 解析为 files 数组（元素形如 {filename, original_name, size}）
+ *   3. 逐个 fs.readFile 读取 uploads/addenda/{filename}（utf-8），单文件失败跳过并告警
+ *   4. 返回 [{filename, original_name, size, content}]；addendum 不存在或 files_json 为空返回 []
+ * 用途：conversationController 组装对话上下文时调用，把文件内容注入 context.addendum.files
+ * @param {string} addendumId - 追加主帖 ID
+ * @returns {Promise<Array<{filename: string, original_name?: string, size?: number, content: string}>>}
+ */
+export async function readAddendumFiles(addendumId) {
+  if (!addendumId) return [];
+
+  // 1. 查询 files_json 字段
+  const row = queryOne(
+    'SELECT files_json FROM inspiration_addenda WHERE id = ?',
+    [addendumId]
+  );
+  if (!row || !row.files_json) return [];
+
+  // 2. 解析 files_json 为数组
+  let filesMeta;
+  try {
+    filesMeta = JSON.parse(row.files_json);
+  } catch (err) {
+    console.warn(`[AddendumService] files_json parse failed for ${addendumId}: ${err.message}`);
+    return [];
+  }
+  if (!Array.isArray(filesMeta) || filesMeta.length === 0) return [];
+
+  // 3. 逐个读取文件内容
+  // 存储目录与 addendumController 的 multer dest 一致：uploads/addenda/
+  const baseDir = path.resolve(process.cwd(), 'uploads', 'addenda');
+  const results = [];
+  for (const meta of filesMeta) {
+    const filename = meta?.filename;
+    if (!filename) {
+      console.warn(`[AddendumService] skip file without filename:`, meta);
+      continue;
+    }
+    const filePath = path.join(baseDir, filename);
+    try {
+      const content = await fs.readFile(filePath, 'utf-8');
+      results.push({
+        filename,
+        original_name: meta.original_name || filename,
+        size: typeof meta.size === 'number' ? meta.size : content.length,
+        content,
+      });
+    } catch (err) {
+      // 单文件读取失败不阻塞，跳过并告警（文件可能已被删除）
+      console.warn(`[AddendumService] read file failed: ${filePath}: ${err.message}`);
+    }
+  }
+  return results;
 }
 
 export default {
@@ -394,4 +508,6 @@ export default {
   listSavedRepliesByInspiration,
   listAllSavedReplies,
   getAddendumById,
+  parseImageArray,
+  readAddendumFiles,
 };

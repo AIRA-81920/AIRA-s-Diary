@@ -31,7 +31,10 @@ const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 //      支持 AI 回复"核心观点 + 折叠展开"分层展示，旧数据 NULL 兼容
 // v10：版本从 9 升到 10，新增 saved_ai_replies.converted 字段
 //      标记已保存回答是否已被"转为评论"，用于"接着想"过滤与对话窗口折叠历史区
-export const CURRENT_VERSION = 10;
+// v11：版本从 10 升到 11，多模态输入扩展
+//      inspirations 新增 source_files_json / title_ai_generated / content_ai_generated
+//      inspiration_addenda 新增 files_json；images_json 语义升级在读取层兼容，迁移不写数据
+export const CURRENT_VERSION = 11;
 
 // 数据库单例（initDb 完成后赋值）
 export let db = null;
@@ -119,6 +122,14 @@ SELECT 1;
     name: 'v10_converted',
     // v10 SQL 部分仅记录版本号；实际 ALTER 由 migrateV10 函数处理（见 migrations/v10_converted.js）
     // 新增 saved_ai_replies.converted INTEGER NOT NULL DEFAULT 0
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 11,
+    name: 'v11_multimodal',
+    // v11 SQL 部分仅记录版本号；实际 ALTER 由 migrateV11 函数处理（见 migrations/v11_multimodal.js）
+    // 新增 inspirations.source_files_json / title_ai_generated / content_ai_generated
+    // 新增 inspiration_addenda.files_json；images_json 语义升级在读取层兼容
     sql: 'SELECT 1;'
   }
 ];
@@ -482,6 +493,13 @@ async function runAllMigrations(database) {
       if (migration.version === 10) {
         const { migrateV10 } = await import('./migrations/v10_converted.js');
         migrateV10(database);
+      }
+      // v11 特殊处理：多模态输入扩展
+      // inspirations 加 source_files_json / title_ai_generated / content_ai_generated
+      // inspiration_addenda 加 files_json
+      if (migration.version === 11) {
+        const { migrateV11 } = await import('./migrations/v11_multimodal.js');
+        migrateV11(database);
       }
       // 记录迁移版本（使用参数绑定防止注入）
       database.run(

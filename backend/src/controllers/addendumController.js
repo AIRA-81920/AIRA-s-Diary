@@ -24,6 +24,10 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
+// v11：deleteAddendum 级联删除文件时需要查 files_json 字段
+// 约束禁止修改 addendumService.js（任务 7 已完成），而 service.getAddendumById 的 SELECT 未包含 files_json 列
+// 因此 controller 内直接 import db 做最小内联查询，仅查 files_json 一列
+import { db } from '../database/db.js';
 
 // ===== multer 图片上传配置 =====
 // 功能：处理追加主帖附带的图片上传，限制大小与扩展名，文件名用 UUID 防路径穿越
@@ -65,19 +69,122 @@ export const upload = multer({
   limits: { fileSize: MAX_FILE_SIZE }
 });
 
+// ===== multer 文本文件上传配置（v11 多模态扩展） =====
+// 功能：处理追加主帖 / 新建灵感附带的文本文件（.md/.txt）上传
+// 实现：两套 storage 共用 fileFilter，dest 分别指向 uploads/addenda/ 与 uploads/neoidea/
+//       文件名 UUID + 原扩展名，杜绝路径穿越与命名冲突
+
+// 新建灵感文件存储目录：uploads/neoidea/
+// 启动时确保目录存在（recursive 保证幂等，与 uploads/addenda 创建方式一致）
+const neoideaUploadsDir = path.resolve(process.cwd(), 'uploads', 'neoidea');
+fs.mkdirSync(neoideaUploadsDir, { recursive: true });
+
+// 文本文件大小上限：500KB
+const MAX_TEXT_FILE_SIZE = 500 * 1024;
+// 允许的文本文件 MIME 白名单
+// 注：部分系统 .md 会被识别为 application/octet-stream，需结合扩展名判断
+const ALLOWED_TEXT_MIME = new Set([
+  'text/markdown',
+  'text/plain',
+  'text/x-markdown',
+  'application/octet-stream'
+]);
+// 允许的文本文件扩展名白名单（小写）
+const ALLOWED_TEXT_EXT = ['.md', '.txt'];
+
+/**
+ * 文本文件过滤器
+ * 功能：拒绝非白名单的文本文件，同时校验扩展名与 MIME
+ * 实现：必须满足"扩展名为 .md/.txt"且"MIME 在白名单内"才放行
+ *       —— 对 application/octet-stream 也要求扩展名为 .md/.txt，杜绝伪装上传
+ * @param {Object} req - Express 请求对象
+ * @param {Object} file - multer 文件对象
+ * @param {Function} cb - 回调
+ */
+function textFileFilter(req, file, cb) {
+  const ext = path.extname(file.originalname).toLowerCase();
+  const extOk = ALLOWED_TEXT_EXT.includes(ext);
+  const mimeOk = ALLOWED_TEXT_MIME.has(file.mimetype);
+  if (extOk && mimeOk) {
+    cb(null, true);
+  } else {
+    cb(new Error(`Unsupported text file type: ${file.mimetype} (${ext})`));
+  }
+}
+
+/**
+ * 生成 UUID + 原扩展名的安全文件名
+ * 功能：单文件 / 多文件 storage 共用的 filename 函数
+ * 实现：扩展名白名单校验通过则用原扩展名，否则降级为 .txt
+ * @param {string} originalname - 原始文件名
+ * @returns {string} `${uuid}${safeExt}`
+ */
+function buildTextFilename(originalname) {
+  const ext = path.extname(originalname).toLowerCase();
+  const safeExt = ALLOWED_TEXT_EXT.includes(ext) ? ext : '.txt';
+  return `${uuidv4()}${safeExt}`;
+}
+
+// 单文件 storage：存储到 uploads/addenda/（与图片共用目录，文件名 UUID 防冲突）
+const storageFile = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadsDir),
+  filename: (req, file, cb) => cb(null, buildTextFilename(file.originalname))
+});
+
+// 多文件 storage：存储到 uploads/neoidea/（新建灵感的源文件目录，distill 任务从此读取）
+const storageFiles = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, neoideaUploadsDir),
+  filename: (req, file, cb) => cb(null, buildTextFilename(file.originalname))
+});
+
+// 导出 uploadFile 实例供 routes.js 使用（multer.single('file')）
+export const uploadFile = multer({
+  storage: storageFile,
+  fileFilter: textFileFilter,
+  limits: { fileSize: MAX_TEXT_FILE_SIZE }
+});
+
+// 导出 uploadFiles 实例供 routes.js 使用（multer.array('files', 10)，最多 10 个文件）
+export const uploadFiles = multer({
+  storage: storageFiles,
+  fileFilter: textFileFilter,
+  limits: { fileSize: MAX_TEXT_FILE_SIZE }
+});
+
 /**
  * 创建追加主帖
- * 功能：POST /inspirations/:id/addenda，body:{content, links, images}
- * 实现方式：调用 addendumService.createAddendum 写入 DB → 触发指纹失效（内容变更）
+ * 功能：POST /inspirations/:id/addenda，body:{content, links, images, files}
+ * 实现方式：调用 addendumService.createAddendum 写入 DB → 扫描 generating 图片入队 VISION → 触发指纹失效
+ *   - v11：新增 images（对象数组）与 files（数组）字段
+ *   - v11：单类型校验——图片与文本文件不可同时存在于同一追加条目
+ *   - v11：images 中 status='generating' 的条目自动入队 VISION 任务（addendumId|filename 作为去重 key）
  */
 export async function createAddendum(req, res) {
   try {
     const { id } = req.params;
-    const { content, links, images } = req.body;
+    const { content, links, images, files } = req.body;
     if (!content) {
       return res.status(400).json({ success: false, error: 'content is required' });
     }
-    const result = addendumService.createAddendum(id, { content, links, images });
+    // 单类型校验：images 与 files 同时非空 → 400（同一追加条目只允许一种附件类型）
+    if (Array.isArray(images) && images.length > 0 && Array.isArray(files) && files.length > 0) {
+      return res.status(400).json({ success: false, error: '图片与文本文件不可同时存在于同一追加条目' });
+    }
+    // 调 service 写入 DB，透传 images 与 files（service 内部转 JSON 字符串存储）
+    const result = addendumService.createAddendum(id, { content, links, images, files });
+    // 扫描 images 中 status='generating' 的条目，入队 VISION 任务
+    // 第二参数 addendumId|filename 作为去重 key（粒度到单张图片，避免同 addendum 多图相互覆盖）
+    if (Array.isArray(images)) {
+      for (const img of images) {
+        if (img && img.status === 'generating' && img.filename) {
+          TaskQueue.enqueue(
+            TASK_KINDS.VISION,
+            `${result.id}|${img.filename}`,
+            { addendumId: result.id, filename: img.filename }
+          );
+        }
+      }
+    }
     // 内容变化后标记指纹 stale，并入队 FINGERPRINT 任务触发后台重算
     // taskQueue 串行：FINGERPRINT → 自动 enqueue INCREMENTAL_SCAN，与 epitaxyController.distill 保持一致
     await FingerprintService.markStale(id);
@@ -91,19 +198,40 @@ export async function createAddendum(req, res) {
 
 /**
  * 更新追加主帖
- * 功能：PUT /addenda/:addendumId，body:{content, links, images}
- * 实现方式：先查 addendum 获取 inspiration_id → 调 service 更新 → markStale
+ * 功能：PUT /addenda/:addendumId，body:{content, links, images, files}
+ * 实现方式：先查 addendum 获取 inspiration_id → 单类型校验 → 调 service 更新 → 扫描 generating 入队 VISION → markStale
+ *   - v11：新增 images（对象数组）与 files（数组）字段
+ *   - v11：单类型校验——图片与文本文件不可同时存在于同一追加条目
+ *   - v11：images 中 status='generating' 的条目自动入队 VISION 任务（addendumId|filename 作为去重 key）
  */
 export async function updateAddendum(req, res) {
   try {
     const { addendumId } = req.params;
-    const { content, links, images } = req.body;
+    const { content, links, images, files } = req.body;
     // 反查 inspiration_id 用于 markStale
     const existing = addendumService.getAddendumById(addendumId);
     if (!existing) {
       return res.status(404).json({ success: false, error: 'Addendum not found' });
     }
-    const result = addendumService.updateAddendum(addendumId, { content, links, images });
+    // 单类型校验：images 与 files 同时非空 → 400（同一追加条目只允许一种附件类型）
+    if (Array.isArray(images) && images.length > 0 && Array.isArray(files) && files.length > 0) {
+      return res.status(400).json({ success: false, error: '图片与文本文件不可同时存在于同一追加条目' });
+    }
+    // 调 service 更新，透传 images 与 files（service 内部转 JSON 字符串存储）
+    const result = addendumService.updateAddendum(addendumId, { content, links, images, files });
+    // 扫描 images 中 status='generating' 的条目，入队 VISION 任务
+    // 第二参数 addendumId|filename 作为去重 key（粒度到单张图片，避免同 addendum 多图相互覆盖）
+    if (Array.isArray(images)) {
+      for (const img of images) {
+        if (img && img.status === 'generating' && img.filename) {
+          TaskQueue.enqueue(
+            TASK_KINDS.VISION,
+            `${addendumId}|${img.filename}`,
+            { addendumId, filename: img.filename }
+          );
+        }
+      }
+    }
     // 反查 inspiration_id 用于 markStale + enqueue（与 epitaxyController.distill 一致）
     await FingerprintService.markStale(existing.inspiration_id);
     TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, existing.inspiration_id);
@@ -117,19 +245,68 @@ export async function updateAddendum(req, res) {
 /**
  * 删除追加主帖
  * 功能：DELETE /addenda/:addendumId
- * 实现方式：先查 inspiration_id → 调 service 删除（级联由 FK 处理）→ markStale
+ * 实现方式：先查 addendum（含 images_json + files_json）→ 调 service 删除（级联由 FK 处理）
+ *           → 级联删除 uploads/addenda/ 下文件（images + files）→ markStale
+ *   - v11：新增级联删除磁盘文件逻辑（images 对象数组 + files 对象数组）
+ *   - 注意：addendumService.getAddendumById 的 SELECT 未包含 files_json 列
+ *           约束禁止修改 service.js，故 controller 内联查询 files_json
  */
 export async function deleteAddendum(req, res) {
   try {
     const { addendumId } = req.params;
-    const existing = addendumService.getAddendumById(addendumId);
-    if (!existing) {
+    // 反查 addendum 行：取 inspiration_id + images_json + files_json
+    // 用 db 内联查询以一并取得 files_json（service.getAddendumById 不返回该列）
+    const row = (() => {
+      const stmt = db.prepare(
+        'SELECT id, inspiration_id, images_json, files_json FROM inspiration_addenda WHERE id = ?'
+      );
+      stmt.bind([addendumId]);
+      const r = stmt.step() ? stmt.getAsObject() : null;
+      stmt.free();
+      return r;
+    })();
+    if (!row) {
       return res.status(404).json({ success: false, error: 'Addendum not found' });
     }
+    // 收集要级联删除的文件名
+    // images_json：用 addendumService.parseImageArray 解析（兼容旧字符串数组升级为对象数组）
+    const imagesToDelete = addendumService.parseImageArray(row.images_json);
+    // files_json：手动 JSON.parse（元素形如 {filename, original_name, size}）
+    let filesToDelete = [];
+    try {
+      const parsed = row.files_json ? JSON.parse(row.files_json) : [];
+      if (Array.isArray(parsed)) filesToDelete = parsed;
+    } catch (err) {
+      // JSON 解析失败不阻塞删除流程，降级为空数组（文件可能残留但不会阻塞业务）
+      console.warn(`[AddendumController] parse files_json failed for ${addendumId}:`, err.message);
+    }
+    // 调 service 删除 DB 行（子表级联由 FK ON DELETE CASCADE 处理）
     const result = addendumService.deleteAddendum(addendumId);
+    // 级联删除 uploads/addenda/ 下的图片与文本文件
+    // 实现：逐个 fs.unlinkSync，try/catch 不阻塞，文件不存在跳过
+    for (const img of imagesToDelete) {
+      const filename = img?.filename;
+      if (!filename) continue;
+      try {
+        fs.unlinkSync(path.join(uploadsDir, filename));
+      } catch (err) {
+        // 文件不存在或删除失败不阻塞，仅记 debug 日志
+        console.debug(`[AddendumController] unlink image skipped: ${filename}:`, err.message);
+      }
+    }
+    for (const f of filesToDelete) {
+      const filename = f?.filename;
+      if (!filename) continue;
+      try {
+        fs.unlinkSync(path.join(uploadsDir, filename));
+      } catch (err) {
+        // 文件不存在或删除失败不阻塞，仅记 debug 日志
+        console.debug(`[AddendumController] unlink file skipped: ${filename}:`, err.message);
+      }
+    }
     // 删除触发指纹重算（追加内容是指纹第五源，删除后需重算）
-    await FingerprintService.markStale(existing.inspiration_id);
-    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, existing.inspiration_id);
+    await FingerprintService.markStale(row.inspiration_id);
+    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, row.inspiration_id);
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteAddendum failed:', e.message);
@@ -299,6 +476,62 @@ export async function uploadImage(req, res) {
     res.json({ success: true, data: { filename: req.file.filename } });
   } catch (e) {
     console.error('[AddendumController] uploadImage failed:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+/**
+ * 上传追加条目文本文件（v11 多模态扩展）
+ * 功能：POST /addenda/upload-file，multipart/form-data 字段名 file
+ * 实现方式：multer.single('file') 处理上传，返回文件名 + 原始名 + 大小 + url 供前端引用
+ *   - 文件存储到 uploads/addenda/（与图片共用目录，文件名 UUID 防冲突）
+ *   - 校验失败由 multer 在 fileFilter 阶段拒绝（前端展示错误）
+ *   - 实际路由层在 router.post(..., uploadFile.single('file'), ctrl.uploadAddendumFile) 中绑定 multer
+ */
+export async function uploadAddendumFile(req, res) {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file uploaded' });
+    }
+    const { filename, originalname, size } = req.file;
+    res.json({
+      success: true,
+      data: {
+        filename,
+        original_name: originalname,
+        size,
+        url: '/uploads/addenda/' + filename
+      }
+    });
+  } catch (e) {
+    console.error('[AddendumController] uploadAddendumFile failed:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+/**
+ * 上传新建灵感的文本文件（v11 多模态扩展）
+ * 功能：POST /inspirations/:id/files，multipart/form-data 字段名 files（多文件，最多 10 个）
+ * 实现方式：multer.array('files', 10) 处理上传，返回文件元数据数组供前端引用
+ *   - 文件存储到 uploads/neoidea/（新建灵感的源文件目录，distill 任务从此读取）
+ *   - 校验失败由 multer 在 fileFilter 阶段拒绝（前端展示错误）
+ *   - 实际路由层在 router.post(..., uploadFiles.array('files', 10), ctrl.uploadInspirationFiles) 中绑定 multer
+ */
+export async function uploadInspirationFiles(req, res) {
+  try {
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ success: false, error: 'No files uploaded' });
+    }
+    // 映射 multer 文件数组为前端可用的元数据结构
+    const data = req.files.map((f) => ({
+      filename: f.filename,
+      original_name: f.originalname,
+      size: f.size,
+      url: '/uploads/neoidea/' + f.filename
+    }));
+    res.json({ success: true, data });
+  } catch (e) {
+    console.error('[AddendumController] uploadInspirationFiles failed:', e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 }

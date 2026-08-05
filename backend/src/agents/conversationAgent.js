@@ -47,6 +47,9 @@ class ConversationAgent extends BaseAgent {
 3. **联网搜索**：当涉及最新信息（研究进展、产品现状、时事动态）时调用 search 工具；纯概念探讨不搜索
 4. **诚实表达**：不确定的内容明确说"我不确定"，不要编造事实；引用搜索结果时标注来源
 
+## 核心原则新增
+- **参考文件是引用源**：追加条目中拖入的参考文件，是用户希望你分析的素材。可以主动引用、引用原文段落、指出文件中的关键点。与灵感原文不同——灵感原文用户熟悉，参考文件用户可能未细读。
+
 ## 回复结构
 - 第一段直接说出你看到的最核心的洞察，不要铺垫、不要复述用户的话，不要先说"这很有意思"
 - 后续段落按需展开，把你觉得最值得说的放在前面
@@ -435,6 +438,18 @@ class ConversationAgent extends BaseAgent {
         addendumLines.push(`附带图片：${context.addendum.images.join(', ')}`);
       }
       sections.push(addendumLines.join('\n'));
+    }
+
+    // 3.1 追加参考文件（addendum 携带的文本文件内容，仅当 files 非空时插入）
+    // 位置：在【当前追加条目】分块之后；独立判断，不依赖 addendum.content 是否存在
+    // 格式：每个文件用 "=== 文件: xxx ===" 标记，content 紧随其后；文件之间用空行分隔
+    if (context.addendum && Array.isArray(context.addendum.files) && context.addendum.files.length > 0) {
+      const fileBlocks = context.addendum.files.map((file) => {
+        // 显示名优先用 original_name（用户原始文件名），无则用 filename（服务器文件名）
+        const displayName = file.original_name || file.filename || '未命名';
+        return `=== 文件: ${displayName} ===\n${file.content || ''}`;
+      });
+      sections.push(`【追加参考文件】\n${fileBlocks.join('\n\n')}`);
     }
 
     // 4. 已有评论

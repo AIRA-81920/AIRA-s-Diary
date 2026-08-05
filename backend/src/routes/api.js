@@ -4,6 +4,10 @@
 import express from 'express';
 import * as controller from '../controllers/inspirationController.js';
 import * as archiveController from '../controllers/archiveController.js';
+// v11 多模态扩展：上传 inspiration 源文件依赖 addendumController 导出的 multer 实例与控制器方法
+//   - uploadFiles：multer 实例（非控制器方法），storage 指向 uploads/neoidea/
+//   - uploadInspirationFiles：控制器方法，返回文件元数据数组
+import * as addendumCtrl from '../controllers/addendumController.js';
 import { db, CURRENT_VERSION } from '../database/db.js';
 import { EmbeddingService } from '../services/embeddingService.js';
 
@@ -57,5 +61,17 @@ router.get('/inspirations/:id/archive', archiveController.getArchive);
 
 // v8 新增：移动灵感到文件夹
 router.patch('/inspirations/:id/move', controller.moveToFolder);
+
+// v11 多模态扩展：新建灵感源文件上传
+// 功能：POST /inspirations/:id/files，multipart/form-data 字段名 files（多文件，最多 10 个）
+// 实现：uploadFiles 是 multer 实例（导出自 addendumController，storage 指向 uploads/neoidea/），
+//       uploadInspirationFiles 是控制器方法（同样导出自 addendumController，返回文件元数据数组）
+// 顺序：参数路径 /inspirations/:id/files 不与静态路径 /inspirations/search、/inspirations/reorder 冲突
+router.post('/inspirations/:id/files', addendumCtrl.uploadFiles.array('files', 10), addendumCtrl.uploadInspirationFiles);
+
+// v11 多模态扩展：手动触发 DISTILL 任务（后台回填 title + content）
+// 功能：POST /inspirations/:id/distill，校验灵感存在 → 入队 DISTILL → 返回 {queued: true}
+// 实现：triggerDistill 是 inspirationController 的控制器方法
+router.post('/inspirations/:id/distill', controller.triggerDistill);
 
 export default router;

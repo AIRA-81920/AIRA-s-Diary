@@ -22,7 +22,10 @@ CREATE TABLE IF NOT EXISTS inspirations (
   inspiration_type TEXT,         -- 灵感类型（M3 新增，迁移 v2 添加）：产品想法/氛围画面/...
   crystal_type TEXT,             -- 结晶形态（M3 新增，迁移 v2 添加）：prd/scene_card/...
   folder_id TEXT,                -- 所属文件夹 ID（v8 新增），NULL 表示散灵感
-  sort_order INTEGER DEFAULT 0   -- 排序序号（v8 新增），越小越靠前
+  sort_order INTEGER DEFAULT 0,  -- 排序序号（v8 新增），越小越靠前
+  source_files_json TEXT,        -- 新建灵感拖入的原文文件 JSON（v11 新增），格式 [{filename, original_name, size}]
+  title_ai_generated INTEGER DEFAULT 0,    -- title 是否 AI 生成待确认（v11 新增）：0=用户手写/已接受，1=AI生成待确认，2=AI提炼失败，3=AI提炼中（v12）
+  content_ai_generated INTEGER DEFAULT 0   -- content 是否 AI 生成待确认（v11 新增）：语义同上（0/1/2/3）
 );
 
 -- 标签表：存储所有可用标签
@@ -192,7 +195,8 @@ CREATE TABLE IF NOT EXISTS inspiration_addenda (
   inspiration_id TEXT NOT NULL,     -- 关联灵感
   content TEXT NOT NULL,            -- 追加文本
   links_json TEXT,                  -- 链接数组 JSON，如 ["https://...", "https://..."]
-  images_json TEXT,                 -- 图片文件名数组 JSON，如 ["uuid1.png", "uuid2.jpg"]
+  images_json TEXT,                 -- 图片数组 JSON（v11 语义升级为对象数组 [{filename, description, status}]，读取层兼容旧字符串数组）
+  files_json TEXT,                  -- 追加的文本文件 JSON（v11 新增），格式 [{filename, original_name, size}]
   created_at DATETIME NOT NULL,     -- 创建时间，按此排序
   updated_at DATETIME,              -- 编辑时间（首次创建时为 NULL）
   FOREIGN KEY (inspiration_id) REFERENCES inspirations(id) ON DELETE CASCADE

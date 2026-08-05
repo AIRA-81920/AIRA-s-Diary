@@ -267,6 +267,27 @@ const useStore = create((set, get) => ({
   },
 
   /**
+   * 触发灵感提炼（v11 多模态输入扩展，任务 13 新增）
+   * 功能：调用后端 POST /inspirations/:id/distill，让 DISTILL agent 从 source_files 提炼 title + content
+   * 实现方式：透传给 api.triggerDistill，返回 Promise 供调用方处理成功/失败
+   *   - 不维护 store state：提炼结果由后端异步写入 inspirations 表，
+   *     前端通过刷新列表/详情获取最新数据（任务 17 InspirationDetail 实现"重试提炼"按钮时调用）
+   *   - 依赖任务 12 在 api.js 中导出 triggerDistill 方法
+   * @param {string} inspirationId - 灵感 ID
+   * @returns {Promise<object|null>} 后端返回结果；失败时 set error 并返回 null
+   */
+  triggerDistill: async (inspirationId) => {
+    set({ error: null })
+    try {
+      const result = await api.triggerDistill(inspirationId)
+      return result
+    } catch (err) {
+      set({ error: err.message })
+      return null
+    }
+  },
+
+  /**
    * 删除灵感
    * 功能：调用 api 删除，成功后从列表移除；若删除的是当前选中则清空选中并重置所有阶段状态
    * K3-g 修复：删除当前选中灵感时，必须显式 reset 所有阶段状态

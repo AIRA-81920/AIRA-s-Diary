@@ -40,10 +40,10 @@ function writeEnvFile(filePath, updates) {
     content = ''
   }
   const lines = content.split('\n')
+  // 空值语义：删除 .env 中对应行，让该字段回退到全局默认 / 代码默认
+  // 非空值：更新已有行或追加新行
   for (const [key, value] of Object.entries(updates)) {
-    // 跳过空值写入：保留 .env 中已有的 per-agent 配置不被 UI 空字段覆盖
-    // 用户如需清除某字段，应直接编辑 .env 文件
-    if (value === '' || value === null || value === undefined) continue
+    const isEmpty = value === '' || value === null || value === undefined
     let found = false
     for (let i = 0; i < lines.length; i++) {
       const trimmed = lines[i].trim()
@@ -52,12 +52,20 @@ function writeEnvFile(filePath, updates) {
       if (eqIdx === -1) continue
       const lineKey = trimmed.slice(0, eqIdx).trim()
       if (lineKey === key) {
-        lines[i] = `${key}=${value}`
+        if (isEmpty) {
+          // 空值：删除该行（回退到默认）
+          lines.splice(i, 1)
+          i--
+        } else {
+          // 非空：更新该行
+          lines[i] = `${key}=${value}`
+        }
         found = true
-        break
+        // 继续扫描（保险起见处理可能的重复行）
       }
     }
-    if (!found) {
+    // 非空且未找到已有行：追加
+    if (!isEmpty && !found) {
       lines.push(`${key}=${value}`)
     }
   }
@@ -69,7 +77,8 @@ router.get('/env', (_req, res) => {
     const envVars = parseEnvFile(ENV_PATH)
     const exampleVars = parseEnvFile(ENV_EXAMPLE_PATH)
 
-    const agentKeys = ['CRYSTALLIZE', 'EPITAXY', 'COALESCE', 'CONVERSATION']
+    // v11 多模态扩展：新增 VISION（识图）、DISTILL（提炼）
+    const agentKeys = ['CRYSTALLIZE', 'EPITAXY', 'COALESCE', 'CONVERSATION', 'VISION', 'DISTILL']
 
     const global = {
       api_key: envVars.OPENAI_API_KEY || '',
@@ -112,10 +121,21 @@ router.put('/env', (req, res) => {
 
     for (const [agent, cfg] of Object.entries(agents || {})) {
       const upper = agent.toUpperCase()
+      // 文本字段：空字符串触发删除（回退到全局/代码默认）
       if (typeof cfg.model === 'string') updates[`OPENAI_MODEL_${upper}`] = cfg.model
-      if (typeof cfg.temperature === 'number') updates[`OPENAI_TEMP_${upper}`] = String(cfg.temperature)
       if (typeof cfg.api_key === 'string') updates[`OPENAI_API_KEY_${upper}`] = cfg.api_key
       if (typeof cfg.base_url === 'string') updates[`OPENAI_BASE_URL_${upper}`] = cfg.base_url
+      // 温度联动删除：当某 Agent 的文本字段全空时，视为该 Agent 不再自定义，
+      // 温度也一并清除（删除 .env 中 OPENAI_TEMP_<AGENT> 行，回退到全局/代码默认）
+      const textFieldsAllEmpty =
+        (typeof cfg.model === 'string' && cfg.model === '') &&
+        (typeof cfg.api_key === 'string' && cfg.api_key === '') &&
+        (typeof cfg.base_url === 'string' && cfg.base_url === '')
+      if (textFieldsAllEmpty) {
+        updates[`OPENAI_TEMP_${upper}`] = ''  // 触发删除
+      } else if (typeof cfg.temperature === 'number') {
+        updates[`OPENAI_TEMP_${upper}`] = String(cfg.temperature)
+      }
     }
 
     if (typeof search.serper_api_key === 'string') updates.SERPER_API_KEY = search.serper_api_key
@@ -141,11 +161,14 @@ router.put('/env', (req, res) => {
 router.post('/env/test', async (req, res) => {
   const { global = {}, agents = {}, search = {} } = req.body
   const TIMEOUT_MS = 10000  // 单项超时 10s
+  // v11 多模态扩展：新增 VISION（识图）、DISTILL（提炼）的中文名称
   const AGENT_LABELS = {
     CRYSTALLIZE: '结晶 Crystallize',
     EPITAXY: '外延 Epitaxy',
     COALESCE: '融合 Coalesce',
-    CONVERSATION: '对话 Conversation'
+    CONVERSATION: '对话 Conversation',
+    VISION: '识图 Vision',
+    DISTILL: '提炼 Distill'
   }
 
   /**

@@ -5,6 +5,28 @@
 import { Inspiration } from '../models/Inspiration.js';
 import inspirationStorage from '../services/inspirationStorage.js';
 import TaskQueue, { TASK_KINDS } from '../services/taskQueue.js';
+import { db, saveDb } from '../database/db.js';
+import { computeDistillMode } from '../services/distillService.js';
+
+// 塑形灵感响应对象（v11 多模态扩展）
+// 功能：解析 source_files_json → source_files 字段，整型字段强制转 Number（SQL.js 可能返回字符串）
+// 实现：解构剔除冗余的 source_files_json；source_files 解析失败降级为 null；
+//      title_ai_generated/content_ai_generated 为 null 时保持 null，否则转 Number
+function shapeInspiration(row) {
+  if (!row) return row;
+  const { source_files_json, ...rest } = row;
+  let sourceFiles = null;
+  if (source_files_json) {
+    try { sourceFiles = JSON.parse(source_files_json); } catch { sourceFiles = null; }
+  }
+  const toNum = v => (v === null || v === undefined ? v : Number(v));
+  return {
+    ...rest,
+    source_files: sourceFiles,
+    title_ai_generated: toNum(row.title_ai_generated),
+    content_ai_generated: toNum(row.content_ai_generated),
+  };
+}
 
 // 获取灵感列表（支持分页与搜索）
 // 实现：解析 query 参数 → 调用 getAll + count → 返回列表与总数
@@ -23,13 +45,14 @@ export async function list(req, res) {
 
 // 获取单个灵感
 // 实现：按 id 查询，不存在返回 404，存在返回数据
+// v11：响应经 shapeInspiration 塑形，含 source_files/title_ai_generated/content_ai_generated
 export async function get(req, res) {
   try {
     const inspiration = Inspiration.getById(req.params.id);
     if (!inspiration) {
       return res.status(404).json({ success: false, error: 'Not found' });
     }
-    res.json({ success: true, data: inspiration });
+    res.json({ success: true, data: shapeInspiration(inspiration) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -38,18 +61,45 @@ export async function get(req, res) {
 // 创建灵感
 // 实现：从 body 取字段 → 调用 Inspiration.create → 初始化 per-inspiration 存储 → 入队指纹生成任务 → 返回 201
 // K3-b：fire-and-forget 入队 fingerprint 任务（架构 §6.1 流程一）
+// v11 多模态扩展：source_files 存入 source_files_json；distill=true 时改入队 DISTILL（后台回填 title+content）
 export async function create(req, res) {
   try {
-    const { title, content, source_type, source_url, metadata } = req.body;
-    const inspiration = Inspiration.create({ title, content, source_type, source_url, metadata });
+    // 多模态扩展字段：source_files（文件元信息数组）、distill（是否后台提炼 title+content）
+    const { title, content, source_type, source_url, metadata, source_files, distill } = req.body;
+    let inspiration = Inspiration.create({ title, content, source_type, source_url, metadata });
+    // source_files 非空时序列化存入 source_files_json（供后续 distill 读取文件清单）
+    if (Array.isArray(source_files) && source_files.length > 0) {
+      inspiration = Inspiration.update(inspiration.id, {
+        source_files_json: JSON.stringify(source_files),
+      });
+    }
     // 初始化灵感文件存储（含 metadata.json 与 panel-state.json）
     await inspirationStorage.initStorage(inspiration.id, {
       title: inspiration.title,
       source_type: inspiration.source_type,
     });
-    // 入队后台指纹生成 + embedding 计算（fire-and-forget，不阻塞响应）
-    TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, inspiration.id);
-    res.status(201).json({ success: true, data: inspiration });
+    // 后台任务入队（fire-and-forget，不阻塞响应）
+    if (distill) {
+      // distill=true：灵感已立即创建（title 可为空或 'Loading'），DISTILL 任务后台按需回填缺失字段；
+      // v12：标记"提炼中(3)"让前端轮询感知；_handleDistill 完成后会自行入队 FINGERPRINT，
+      //      故此处不再重复入队（避免对占位内容空算一次指纹）
+      const mode = computeDistillMode(title, content);
+      const sets = [];
+      const params = [];
+      if (mode === 'both' || mode === 'title') sets.push('title_ai_generated = 3');
+      if (mode === 'both' || mode === 'content') sets.push('content_ai_generated = 3');
+      if (sets.length > 0) {
+        params.push(inspiration.id);
+        db.run(`UPDATE inspirations SET ${sets.join(', ')} WHERE id = ?`, params);
+        saveDb();
+      }
+      TaskQueue.enqueue(TASK_KINDS.DISTILL, inspiration.id);
+    } else {
+      // 默认流程：入队指纹生成 + embedding 计算（架构 §6.1 流程一）
+      TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, inspiration.id);
+    }
+    // 返回塑形对象（含 source_files/title_ai_generated/content_ai_generated）
+    res.status(201).json({ success: true, data: shapeInspiration(inspiration) });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }
@@ -58,15 +108,56 @@ export async function create(req, res) {
 // 更新灵感
 // 实现：调用 Inspiration.update 动态更新字段 → 内容变化时入队指纹重算 → 返回更新后对象
 // K3-b：title/content 变化时 markStale + 入队 fingerprint（架构 §6.2 + R1：仅产物变化时重算）
+// v11：title_ai_generated/content_ai_generated 经 Inspiration.update allowedFields 透传；
+//      重要——ai_generated 翻转不触发 FINGERPRINT（仅 title/content 内容变化才触发，避免无意义重算）
 export async function update(req, res) {
   try {
     const inspirationId = req.params.id;
-    const updated = Inspiration.update(inspirationId, req.body);
-    // 仅当 title 或 content 变化时才触发指纹重算（避免无意义重算，R1）
+    // v11 多模态扩展：前端传 source_files（数组），后端映射为 source_files_json（JSON 字符串）存储
+    // 功能：兼容前端语义字段名，避免前端感知后端存储细节
+    // 实现：若 req.body.source_files 存在，序列化为 source_files_json 后透传给 Inspiration.update
+    const updateData = { ...req.body };
+    if (Array.isArray(updateData.source_files)) {
+      updateData.source_files_json = JSON.stringify(updateData.source_files);
+      delete updateData.source_files;
+    }
+    // Inspiration.update 的 allowedFields 已含 title_ai_generated/content_ai_generated（多模态扩展）
+    const updated = Inspiration.update(inspirationId, updateData);
+    // 仅当 title 或 content 内容变化时才触发指纹重算（ai_generated 翻转不触发，R1）
     if (req.body.title !== undefined || req.body.content !== undefined) {
       TaskQueue.enqueue(TASK_KINDS.FINGERPRINT, inspirationId);
     }
-    res.json({ success: true, data: updated });
+    res.json({ success: true, data: shapeInspiration(updated) });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// 手动触发 DISTILL 任务（v11 多模态扩展 + v12 按需提炼）
+// 实现：校验灵感存在 → 按需标记"提炼中(3)" → 入队 DISTILL 任务（后台回填缺失字段）→ 返回 queued: true
+// 路由：POST /inspirations/:id/distill（任务 11 接入）
+// v12：根据当前 title/content 计算提炼模式（both/title/content），只把需要生成的字段标记为"提炼中(3)"，
+//      前端 Detail 检测到 3 时开启轮询；提炼完成后由 taskQueue 置 1（待确认）或 2（失败）
+export async function triggerDistill(req, res) {
+  try {
+    const inspiration = Inspiration.getById(req.params.id);
+    if (!inspiration) {
+      return res.status(404).json({ success: false, error: 'Inspiration not found' });
+    }
+    // 按需提炼：只标记需要生成的字段为"提炼中(3)"（用户已有字段不标记，保持 0）
+    const mode = computeDistillMode(inspiration.title, inspiration.content);
+    const sets = [];
+    const params = [];
+    if (mode === 'both' || mode === 'title') sets.push('title_ai_generated = 3');
+    if (mode === 'both' || mode === 'content') sets.push('content_ai_generated = 3');
+    if (sets.length > 0) {
+      params.push(req.params.id);
+      db.run(`UPDATE inspirations SET ${sets.join(', ')} WHERE id = ?`, params);
+      saveDb();
+    }
+    // 入队 DISTILL（fire-and-forget）：distillService 读 source_files_json + 已有字段 → LLM 按需提炼 → 回填 DB + 入队 FINGERPRINT
+    TaskQueue.enqueue(TASK_KINDS.DISTILL, req.params.id);
+    res.json({ success: true, data: { queued: true, mode } });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

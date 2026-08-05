@@ -242,6 +242,14 @@ export const TASK_QUEUE_LIMITS = {
 };
 
 // =========================================================================
+// 对话输入约束（多模态输入扩展）
+// =========================================================================
+// 对话 Agent 注入追加参考文件时的累计截断阈值
+// 用途：用户在对话中追加多个参考文件时，按累计字符数截断，防止超出 LLM 上下文
+// 单位：字符数
+export const CONVERSATION_FILE_INPUT_LIMIT = 6000;
+
+// =========================================================================
 // 历史保留（向后兼容，已废弃但保留导出）
 // =========================================================================
 // 以下常量保留用于向后兼容，新代码应优先使用 THRESHOLDS / BRIDGE_TYPES 等
@@ -1228,6 +1236,7 @@ export const CONSTANTS = {
   LLM_LIMITS,
   FORCE_GRAPH_LIMITS,
   TASK_QUEUE_LIMITS,
+  CONVERSATION_FILE_INPUT_LIMIT,
   // 历史保留
   DEFAULT_SIMILARITY_THRESHOLD,
   SEMANTIC_LINK_THRESHOLD,

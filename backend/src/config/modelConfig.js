@@ -22,6 +22,8 @@ export const AGENT_TYPES = {
   EPITAXY:     'epitaxy',      // 外延：方向提案 → 深挖笔记 → 选词填空（原 RESEARCH）
   COALESCE:    'coalesce',     // 融合：跨灵感桥梁 → 新灵感种子（原 ASSOCIATION）
   CONVERSATION:'conversation', // v7 新增：追加条目对话，基于灵感上下文回答用户追问
+  VISION:      'vision',       // 图片识图，glm-4v 视觉模型
+  DISTILL:     'distill',      // 多文件提炼 title+content
   DEFAULT:     'default'       // 默认 fallback
 };
 
@@ -32,6 +34,8 @@ const CODE_DEFAULTS = {
   epitaxy:      { model: 'gpt-4o',       temperature: 0.7 },  // 提案+深挖，需要创意+严谨
   coalesce:     { model: 'gpt-4o',       temperature: 0.8 },  // 桥梁生成，需要联想
   conversation: { model: 'gpt-4o',       temperature: 0.5 },  // v7 新增：对话，复用默认模型，可被 env 覆盖为带联网能力的模型
+  vision:       { model: 'glm-4v-flash', temperature: 0.3 },  // 识图，低温保证客观
+  distill:      { model: 'gpt-4o-mini',  temperature: 0.3 },  // 提炼，低温保证基于原文
   default:      { model: 'gpt-4o-mini',  temperature: 0.5 }
 };
 

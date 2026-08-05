@@ -15,10 +15,12 @@ import React, { useState, useEffect } from 'react'
 import {
   Brain, Pencil, Trash2, Clock, FileText, X,
   Sparkles, Link2, AlertCircle, Loader2, Check, Plus, ArrowRight,
-  Lightbulb, CheckCircle2, BookOpen
+  Lightbulb, CheckCircle2, BookOpen, RefreshCw
 } from 'lucide-react'
 import { formatTime } from '../services/store.js'
 import useStore from '../services/store.js'
+// v11 多模态扩展：重试提炼后需刷新单个灵感数据
+import { getInspiration } from '../services/api.js'
 import StageBadge from './StageBadge.jsx'
 import StageAccordion from './StageAccordion.jsx'
 import AddendumSection from './AddendumSection.jsx'
@@ -135,6 +137,47 @@ const CRYSTAL_FIELD_LABELS = {
 }
 
 /**
+ * AIGeneratedBadge — "AI 生成"小标
+ * 功能：在 AI 生成的 title/content 旁边显示徽章，提示用户该字段由 AI 生成待确认
+ * 实现方式：cyan 强调色 badge，毛玻璃背景，与现有 StageBadge 风格一致
+ */
+function AIGeneratedBadge() {
+  return (
+    <span
+      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-sans whitespace-nowrap"
+      style={{
+        background: 'rgb(var(--cyan-rgb) / 0.15)',
+        color: 'var(--accent-cyan-bright)',
+        border: '1px solid rgb(var(--cyan-rgb) / 0.2)'
+      }}
+      title="此内容由 AI 生成，点击接受或编辑"
+    >
+      <Sparkles size={9} />
+      <span>AI 生成</span>
+    </span>
+  )
+}
+
+/**
+ * v12：判断灵感是否处于"DISTILL 提炼进行中 / 失败待重试"状态
+ * 功能：Detail 轮询触发条件 + 提炼中/失败标记的统一判断
+ * 实现方式：
+ *   - title === 'Loading'：新建占位（DISTILL 入队但尚未标记 3 的时间窗口）
+ *   - title_ai_generated === 3 || content_ai_generated === 3：提炼中（triggerDistill 入队时标记）
+ *   - title_ai_generated === 2 || content_ai_generated === 2：提炼失败待重试
+ *   - v12 按需提炼：mode='content' 时仅 content 字段为 3/2，title 保持用户值；故两个字段都要判断
+ * @param {object} ins - 灵感对象
+ * @returns {boolean} 是否需要轮询 / 是否处于非稳态
+ */
+function isDistillPending(ins) {
+  return !!ins && (
+    ins.title === 'Loading' ||
+    ins.title_ai_generated === 3 || ins.content_ai_generated === 3 ||
+    ins.title_ai_generated === 2 || ins.content_ai_generated === 2
+  )
+}
+
+/**
  * @param {object} props
  * @param {object|null} props.inspiration - 选中的灵感对象；null 表示未选中
  * @param {Function} props.onEdit - 点击"编辑"按钮的回调
@@ -177,6 +220,71 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   const epitaxyFragments = useStore((s) => s.epitaxyFragments)
   const epitaxySelectedChunks = useStore((s) => s.epitaxySelectedChunks)
   const epitaxyDistilledChunks = useStore((s) => s.epitaxyDistilledChunks)
+
+  // v11 多模态扩展：AI 生成小标 + 内联编辑 + 重试提炼相关状态
+  // editingTitle/titleText：标题内联编辑状态
+  // editingContent/contentText：内容内联编辑状态
+  // accepting/retrying：接受 / 重试提炼按钮的 loading 状态
+  const [editingTitle, setEditingTitle] = useState(false)
+  const [titleText, setTitleText] = useState('')
+  const [editingContent, setEditingContent] = useState(false)
+  const [contentText, setContentText] = useState('')
+  const [accepting, setAccepting] = useState(false)
+  const [retrying, setRetrying] = useState(false)
+  // 从 store 获取 updateInspiration（更新灵感字段）和 triggerDistill（触发 DISTILL 任务）
+  const updateInspiration = useStore((s) => s.updateInspiration)
+  const triggerDistill = useStore((s) => s.triggerDistill)
+
+  // v11：DISTILL 自动刷新轮询
+  // 问题：DISTILL 是后台异步任务（taskQueue），完成后无推送机制，UI 会一直停留在"提炼中"
+  // 方案：当 title='Loading'（提炼中/失败待重试）时，每 5 秒拉取一次灵感数据，
+  //       完成后通过 useStore.setState 直接更新 selectedInspiration 与列表，实现 UI 自动刷新
+  // 实现方式：
+  //   - useEffect 依赖 [id, title, title_ai_generated]：title 变化（Loading → 实际标题）时
+  //     新 effect 条件不满足直接 return，并清理旧轮询（双保险停止）
+  //   - 用递归 setTimeout 而非 setInterval，避免并发重叠
+  //   - 用 useStore.setState 直接更新，不触发完整 reset（避免 archive 重载与 UI 闪动）
+  useEffect(() => {
+    if (!inspiration?.id) return
+    // v12：轮询触发条件——提炼进行中（title='Loading' 占位 / ai_generated=3 提炼中）
+    // 或失败待重试（ai_generated=2）。按需提炼模式下 content 也可能单独处于提炼中/失败
+    if (!isDistillPending(inspiration)) return
+
+    let cancelled = false
+    let timer = null
+
+    const poll = async () => {
+      if (cancelled) return
+      try {
+        const res = await getInspiration(inspiration.id)
+        const updated = res?.data || res
+        if (cancelled || !updated?.id) return
+        // 提炼仍未完成（title 还是 Loading / 任一字段仍为 3 或 2）→ 继续轮询；否则停止
+        const stillPending = isDistillPending(updated)
+        // 静默更新 store：selectedInspiration + 列表项（不触发完整 reset）
+        useStore.setState((state) => ({
+          selectedInspiration: updated,
+          inspirations: state.inspirations.map((ins) =>
+            ins.id === updated.id ? updated : ins
+          )
+        }))
+        if (stillPending) {
+          timer = setTimeout(poll, 5000)
+        }
+      } catch (err) {
+        // 网络抖动等瞬时错误：不中断轮询，稍后重试
+        console.warn('[InspirationDetail] 轮询提炼状态失败:', err.message)
+        timer = setTimeout(poll, 5000)
+      }
+    }
+
+    // 首次轮询延迟 3 秒（给 DISTILL 任务启动留出时间），之后每 5 秒
+    timer = setTimeout(poll, 3000)
+    return () => {
+      cancelled = true
+      if (timer) clearTimeout(timer)
+    }
+  }, [inspiration?.id, inspiration?.title, inspiration?.title_ai_generated, inspiration?.content_ai_generated])
 
   // 未选中灵感：显示空状态（大型 Brain 图标 + 衬线哲学提示）
   if (!inspiration) {
@@ -224,6 +332,105 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
       setConfirmingDelete(false)
       setCollapsing(false)
     }, 250)
+  }
+
+  // v11/v12 多模态扩展：AI 生成状态判断（v12 按需提炼：title/content 可分别处于提炼中/失败）
+  // isDistilling: title='Loading' 或任一字段 ai_generated=3（提炼中），禁止编辑
+  const isDistilling = inspiration.title === 'Loading' ||
+    inspiration.title_ai_generated === 3 || inspiration.content_ai_generated === 3
+  // hasAIGenerated: title 或 content 由 AI 生成待确认（ai_generated=1）
+  const hasAIGenerated = inspiration.title_ai_generated === 1 || inspiration.content_ai_generated === 1
+  // needRetry: 任一字段 DISTILL 提炼失败（ai_generated=2），显示重试按钮（v12 从仅 title 扩展为两字段）
+  const needRetry = inspiration.title_ai_generated === 2 || inspiration.content_ai_generated === 2
+
+  // 开始编辑标题：进入内联编辑态，初始化文本
+  const startEditTitle = () => {
+    if (isDistilling) return
+    setTitleText(inspiration.title || '')
+    setEditingTitle(true)
+  }
+
+  // 保存标题编辑：同时清除 title_ai_generated 标记（用户手动编辑后不再是 AI 生成）
+  const saveTitleEdit = async () => {
+    const newTitle = titleText.trim()
+    setEditingTitle(false)
+    if (!newTitle || newTitle === inspiration.title) return
+    try {
+      await updateInspiration(inspiration.id, {
+        title: newTitle,
+        title_ai_generated: 0
+      })
+    } catch (err) {
+      console.error('[InspirationDetail] 保存标题失败:', err.message)
+    }
+  }
+
+  // 开始编辑内容：进入内联编辑态，初始化文本
+  const startEditContent = () => {
+    if (isDistilling) return
+    setContentText(inspiration.content || '')
+    setEditingContent(true)
+  }
+
+  // 保存内容编辑：同时清除 content_ai_generated 标记
+  const saveContentEdit = async () => {
+    const newContent = contentText
+    setEditingContent(false)
+    if (newContent === inspiration.content) return
+    try {
+      await updateInspiration(inspiration.id, {
+        content: newContent,
+        content_ai_generated: 0
+      })
+    } catch (err) {
+      console.error('[InspirationDetail] 保存内容失败:', err.message)
+    }
+  }
+
+  // 接受 AI 生成的内容：清除 title/content 的 ai_generated 标记
+  const handleAccept = async () => {
+    setAccepting(true)
+    try {
+      await updateInspiration(inspiration.id, {
+        title_ai_generated: 0,
+        content_ai_generated: 0
+      })
+    } catch (err) {
+      console.error('[InspirationDetail] 接受失败:', err.message)
+    } finally {
+      setAccepting(false)
+    }
+  }
+
+  // 重试提炼：触发 DISTILL 任务并刷新灵感数据
+  // 注意：DISTILL 是异步任务，triggerDistill 仅入队，title 可能仍为 'Loading'
+  const handleRetryDistill = async () => {
+    setRetrying(true)
+    try {
+      const result = await triggerDistill(inspiration.id)
+      if (result && result.success !== false) {
+        // 提炼任务已入队，刷新灵感数据获取最新状态
+        try {
+          const res = await getInspiration(inspiration.id)
+          const updated = res?.data || res
+          if (updated && updated.id) {
+            // 直接更新 store 中的 selectedInspiration 和列表，不触发完整 reset
+            useStore.setState((state) => ({
+              selectedInspiration: updated,
+              inspirations: state.inspirations.map(ins =>
+                ins.id === updated.id ? updated : ins
+              )
+            }))
+          }
+        } catch (refreshErr) {
+          console.warn('[InspirationDetail] 刷新灵感数据失败:', refreshErr.message)
+        }
+      }
+    } catch (err) {
+      console.error('[InspirationDetail] 重试提炼失败:', err.message)
+    } finally {
+      setRetrying(false)
+    }
   }
 
   // K3-g：移除 SOURCE_TYPE_META——来源徽章已删，不再需要
@@ -335,13 +542,49 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
           </div>
         )}
 
-        {/* 标题：Cormorant Garamond 36px，font-weight 700 */}
-        <h2
-          className="font-display text-4xl font-bold text-ink mb-4 leading-tight animate-fade-in-up"
-          style={{ letterSpacing: '-0.02em' }}
-        >
-          {inspiration.title}
-        </h2>
+        {/* 标题：Cormorant Garamond 36px，font-weight 700
+            v11 多模态扩展：AI 生成时显示小标 + 提炼中禁止编辑 + 内联编辑 */}
+        <div className="flex items-center gap-2 mb-4 animate-fade-in-up flex-wrap">
+          {editingTitle ? (
+            <input
+              autoFocus
+              value={titleText}
+              onChange={(e) => setTitleText(e.target.value)}
+              onBlur={saveTitleEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') { e.preventDefault(); saveTitleEdit() }
+                if (e.key === 'Escape') { setEditingTitle(false) }
+              }}
+              className="font-display text-4xl font-bold text-ink leading-tight bg-transparent border-b border-cyan-500/30 outline-none flex-1 min-w-0"
+              style={{ letterSpacing: '-0.02em' }}
+            />
+          ) : (
+            <h2
+              className={`font-display text-4xl font-bold text-ink leading-tight ${isDistilling ? 'cursor-not-allowed' : 'cursor-text'}`}
+              style={{ letterSpacing: '-0.02em' }}
+              onClick={() => !isDistilling && startEditTitle()}
+              title={isDistilling ? '提炼中，暂不可编辑' : '点击编辑'}
+            >
+              {inspiration.title}
+            </h2>
+          )}
+          {/* AI 生成小标：title_ai_generated=1 时显示 */}
+          {inspiration.title_ai_generated === 1 && <AIGeneratedBadge />}
+          {/* 提炼中指示：title='Loading' 时显示 */}
+          {isDistilling && (
+            <span className="flex items-center gap-1 text-cyan-400/60 text-xs font-sans">
+              <Loader2 size={12} className="animate-spin" />
+              <span>提炼中</span>
+            </span>
+          )}
+          {/* 提炼失败标记：title_ai_generated=2 时显示 */}
+          {needRetry && (
+            <span className="flex items-center gap-1 text-rose-400/70 text-xs font-sans">
+              <AlertCircle size={12} />
+              <span>提炼失败</span>
+            </span>
+          )}
+        </div>
 
         {/* 元数据行：创建时间 + 更新时间 + 来源类型 + 灵感类型 */}
         <div
@@ -367,16 +610,91 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
           )}
         </div>
 
-        {/* 内容：保留换行与空白，行高 1.75 营造阅读舒适度 */}
-        {inspiration.content ? (
+        {/* 内容：保留换行与空白，行高 1.75 营造阅读舒适度
+            v11 多模态扩展：AI 生成时显示小标 + 提炼中禁止编辑 + 内联编辑 */}
+        <div
+          className="animate-fade-in-up mb-10"
+          style={{ animationDelay: '120ms' }}
+        >
+          {editingContent ? (
+            <textarea
+              autoFocus
+              value={contentText}
+              onChange={(e) => setContentText(e.target.value)}
+              onBlur={saveContentEdit}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveContentEdit() }
+                if (e.key === 'Escape') { setEditingContent(false) }
+              }}
+              rows={Math.min(20, Math.max(3, (contentText || '').split('\n').length))}
+              className="text-ink/70 text-[15px] leading-[1.75] w-full bg-transparent border border-cyan-500/20 rounded-lg p-2 outline-none font-sans resize-none"
+              placeholder="请输入内容..."
+            />
+          ) : inspiration.content ? (
+            <div
+              className={`text-ink/70 text-[15px] leading-[1.75] whitespace-pre-wrap font-sans ${isDistilling ? 'cursor-not-allowed' : 'cursor-text'}`}
+              onClick={() => !isDistilling && startEditContent()}
+              title={isDistilling ? '提炼中，暂不可编辑' : '点击编辑'}
+            >
+              {inspiration.content}
+            </div>
+          ) : (
+            <p className="font-display text-ink/25 text-lg italic">（暂无内容）</p>
+          )}
+          {/* AI 生成小标：content_ai_generated=1 时显示 */}
+          {inspiration.content_ai_generated === 1 && (
+            <div className="mt-2">
+              <AIGeneratedBadge />
+            </div>
+          )}
+        </div>
+
+        {/* ========== AI 生成内容操作栏：接受 / 重试提炼 ==========
+            v11 多模态扩展：
+            - 当 title/content 有 ai_generated=1 时显示"接受"按钮（cyan 强调色）
+            - 当 title_ai_generated=2 时显示"重试提炼"按钮（紫色，触发 DISTILL 任务） */}
+        {(hasAIGenerated || needRetry) && (
           <div
-            className="text-ink/70 text-[15px] leading-[1.75] whitespace-pre-wrap font-sans animate-fade-in-up mb-10"
-            style={{ animationDelay: '120ms' }}
+            className="flex items-center gap-2 mb-8 animate-fade-in-up"
+            style={{ animationDelay: '150ms' }}
           >
-            {inspiration.content}
+            {/* 接受按钮：清除 ai_generated 标记，确认 AI 生成内容 */}
+            {hasAIGenerated && (
+              <button
+                type="button"
+                onClick={handleAccept}
+                disabled={accepting || isDistilling}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
+                style={{
+                  background: 'rgb(var(--cyan-bright-rgb) / 0.12)',
+                  color: 'var(--accent-cyan-bright)',
+                  border: '1px solid rgb(var(--cyan-bright-rgb) / 0.25)'
+                }}
+                title="接受 AI 生成的内容，移除 AI 生成标记"
+              >
+                {accepting ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                <span>{accepting ? '接受中...' : '接受'}</span>
+              </button>
+            )}
+            {/* 重试提炼按钮：DISTILL 失败后重新触发提炼任务 */}
+            {needRetry && (
+              <button
+                type="button"
+                onClick={handleRetryDistill}
+                disabled={retrying}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
+                style={{
+                  background: 'rgba(168,85,247,0.12)',
+                  color: 'var(--sem-purple)',
+                  border: '1px solid rgba(168,85,247,0.25)'
+                }}
+                title="重新触发 AI 提炼"
+              >
+                {retrying ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+                <span>{retrying ? '提炼中...' : '重试提炼'}</span>
+              </button>
+            )}
           </div>
-        ) : (
-          <p className="font-display text-ink/25 text-lg italic mb-10">（暂无内容）</p>
         )}
 
         {/* ========== 追加思考（时间线日志）========== */}

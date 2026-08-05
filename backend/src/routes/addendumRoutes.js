@@ -21,6 +21,13 @@ router.get('/addenda/saved-replies', ctrl.listAllSavedReplies);
 // 图片上传（multipart/form-data，字段名 image）
 router.post('/addenda/upload-image', ctrl.upload.single('image'), ctrl.uploadImage);
 
+// 文本文件上传（v11 多模态扩展，multipart/form-data，字段名 file）
+// 功能：上传单条追加条目附带的 .md/.txt 文本文件，存 uploads/addenda/
+// 实现：uploadFile 是 multer 实例（导出自 addendumController，非控制器方法），
+//       uploadAddendumFile 是控制器方法；路由层先用 multer 解析 multipart，
+//       再交由控制器返回 {filename, original_name, size, url}
+router.post('/addenda/upload-file', ctrl.uploadFile.single('file'), ctrl.uploadAddendumFile);
+
 // ===== 追加主帖 CRUD =====
 
 // 列出某灵感的所有追加主帖（含评论与已保存 AI 回答的嵌套结构）

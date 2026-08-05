@@ -84,7 +84,8 @@ export const Inspiration = {
   // 更新灵感（动态构建 UPDATE 语句，只更新提供的字段）
   // 实现：遍历允许更新的字段，收集非 undefined 字段构建 SET 子句，自动更新 updated_at
   update(id, data = {}) {
-    const allowedFields = ['title', 'content', 'summary', 'source_type', 'source_url', 'metadata', 'folder_id', 'sort_order'];
+    // 多模态扩展：新增 source_files_json / title_ai_generated / content_ai_generated 透传支持
+    const allowedFields = ['title', 'content', 'summary', 'source_type', 'source_url', 'metadata', 'folder_id', 'sort_order', 'source_files_json', 'title_ai_generated', 'content_ai_generated'];
     const setParts = [];
     const params = [];
 

@@ -16,6 +16,8 @@
 import ConversationAgent from '../agents/conversationAgent.js';
 import { db } from '../database/db.js';
 import inspirationStorage from '../services/inspirationStorage.js';
+import * as addendumService from '../services/addendumService.js';
+import { CONVERSATION_FILE_INPUT_LIMIT } from '../config/constants.js';
 
 // 单例：ConversationAgent 无状态，复用一个实例
 const agent = new ConversationAgent();
@@ -70,6 +72,43 @@ function parseJsonArray(jsonStr) {
 }
 
 /**
+ * 按累计字符数截断参考文件数组（对话注入用）
+ * 功能：按 files 顺序累加 content.length，超过 limit 时停止添加后续文件，
+ *       并在最后一个保留文件的 content 末尾追加 "\n\n【后续文件已截断】" 标注
+ * 实现方式：
+ *   1. 顺序遍历，加入前判断 累计长度 + 当前文件长度 是否超限
+ *   2. 超限则停止添加，标记 truncated=true（后续文件全部丢弃）
+ *   3. truncated 时给最后一个保留文件的 content 末尾追加截断标注
+ *   4. 拷贝对象避免 mutate readAddendumFiles 返回的原始对象
+ * 边界：若第一个文件就超限，kept 为空，不追加标注（files 返回空数组）
+ * @param {Array<{filename: string, original_name?: string, size?: number, content: string}>} files
+ * @param {number} limit - 累计字符上限（CONVERSATION_FILE_INPUT_LIMIT）
+ * @returns {Array<{filename: string, original_name?: string, size?: number, content: string}>}
+ */
+function truncateFiles(files, limit) {
+  if (!Array.isArray(files) || files.length === 0) return [];
+  const kept = [];
+  let total = 0;
+  let truncated = false;
+  for (const file of files) {
+    const len = (file.content || '').length;
+    // 加入前判断：累计 + 当前 > 上限 则停止
+    if (total + len > limit) {
+      truncated = true;
+      break;
+    }
+    kept.push({ ...file });
+    total += len;
+  }
+  // 截断时在最后一个保留文件的 content 末尾追加标注
+  if (truncated && kept.length > 0) {
+    const last = kept[kept.length - 1];
+    last.content = (last.content || '') + '\n\n【后续文件已截断】';
+  }
+  return kept;
+}
+
+/**
  * 对话入口
  * 功能：POST /inspirations/:id/addenda/:addendumId/conversation
  *       body: { question, history? }
@@ -101,22 +140,36 @@ export async function ask(req, res) {
 
     // ===== 2. 从 DB 读 addendum =====
     const addendumRow = queryOne(
-      'SELECT id, inspiration_id, content, links_json, images_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
+      'SELECT id, inspiration_id, content, links_json, images_json, files_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
       [addendumId]
     );
     if (!addendumRow) {
       return res.status(404).json({ success: false, error: 'Addendum not found' });
     }
-    // 组装 addendum 上下文（links/images 解析回数组）
+    // 组装 addendum 上下文（links/images 解析回数组；files 默认空数组，下方按需填充）
     const addendum = {
       id: addendumRow.id,
       inspiration_id: addendumRow.inspiration_id,
       content: addendumRow.content,
       links: parseJsonArray(addendumRow.links_json),
       images: parseJsonArray(addendumRow.images_json),
+      files: [],
       created_at: addendumRow.created_at,
       updated_at: addendumRow.updated_at,
     };
+
+    // ===== 2.1 若 addendum 携带参考文件，读取内容并按累计字符截断注入 =====
+    // 功能：files_json 非空时调 readAddendumFiles 取文件内容，按 CONVERSATION_FILE_INPUT_LIMIT 截断
+    // 实现：readAddendumFiles 读 uploads/addenda/ 下文件 → truncateFiles 累计截断 → 注入 addendum.files
+    if (addendumRow.files_json) {
+      try {
+        const fileContents = await addendumService.readAddendumFiles(addendumId);
+        addendum.files = truncateFiles(fileContents, CONVERSATION_FILE_INPUT_LIMIT);
+      } catch (err) {
+        // 文件读取失败不阻塞对话，files 保持空数组
+        console.warn(`[ConversationController] read addendum files failed for ${addendumId}: ${err.message}`);
+      }
+    }
 
     // ===== 3. 从 DB 读 addendum 下的 comments =====
     let comments = [];
@@ -226,7 +279,7 @@ export async function askStream(req, res) {
     }
 
     const addendumRow = queryOne(
-      'SELECT id, inspiration_id, content, links_json, images_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
+      'SELECT id, inspiration_id, content, links_json, images_json, files_json, created_at, updated_at FROM inspiration_addenda WHERE id = ?',
       [addendumId]
     );
     if (!addendumRow) {
@@ -239,9 +292,21 @@ export async function askStream(req, res) {
       content: addendumRow.content,
       links: parseJsonArray(addendumRow.links_json),
       images: parseJsonArray(addendumRow.images_json),
+      files: [],
       created_at: addendumRow.created_at,
       updated_at: addendumRow.updated_at,
     };
+
+    // 若 addendum 携带参考文件，读取内容并按累计字符截断注入（与 ask() 逻辑一致）
+    if (addendumRow.files_json) {
+      try {
+        const fileContents = await addendumService.readAddendumFiles(addendumId);
+        addendum.files = truncateFiles(fileContents, CONVERSATION_FILE_INPUT_LIMIT);
+      } catch (err) {
+        // 文件读取失败不阻塞流式对话，files 保持空数组
+        console.warn(`[ConversationController] read addendum files failed for ${addendumId}: ${err.message}`);
+      }
+    }
 
     let comments = [];
     try {

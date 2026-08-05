@@ -4,17 +4,24 @@ import useStore from '../services/store.js'
 import { rippleSwitchTheme } from '../services/themeTransition.js'
 import { X, Settings, Globe, Eye, EyeOff } from 'lucide-react'
 
+// 各 Agent 元信息：label 显示名、description 描述、color 圆点颜色
+// v11 多模态扩展：新增 VISION（识图）、DISTILL（提炼）
 const AGENT_META = {
   CRYSTALLIZE: { label: '结晶 Crystallize', description: '灵感感知·追问·生成结晶体', color: 'var(--accent-cyan)' },
   EPITAXY: { label: '外延 Epitaxy', description: '方向提案·深挖·选词提炼', color: '#3b82f6' },
   COALESCE: { label: '融合 Coalesce', description: '跨灵感语义桥梁生成', color: '#a855f7' },
-  CONVERSATION: { label: '对话 Conversation', description: '灵感上下文追问·联网搜索', color: 'var(--accent-amber)' }
+  CONVERSATION: { label: '对话 Conversation', description: '灵感上下文追问·联网搜索', color: 'var(--accent-amber)' },
+  VISION: { label: '识图 Vision', description: '图片→客观描述（需多模态模型）', color: '#10b981' },
+  DISTILL: { label: '提炼 Distill', description: '多文件→标题+描述提炼', color: '#f59e0b' }
 }
 
+// 推荐模型列表（datalist 下拉提示）
+// v11 多模态扩展：新增 glm-4.6v、glm-4v-flash 视觉模型
 const SUGGESTED_MODELS = [
   'gpt-4o', 'gpt-4o-mini', 'gpt-4.1',
   'deepseek-v4-pro', 'deepseek-v4-flash',
-  'claude-4-sonnet', 'claude-4-haiku'
+  'claude-4-sonnet', 'claude-4-haiku',
+  'glm-4.6v', 'glm-4v-flash'
 ]
 
 const CATEGORIES = [
