@@ -77,7 +77,7 @@ AIRA's Diary/
 
 ### GitHub Release（推荐，开箱即用）
 
-前往 [Releases](https://github.com/<username>/airas-diary/releases) 下载 `AIRAs-Diary-vX.X.X.7z`。
+前往 [Releases](https://github.com/<username>/airas-diary/releases) 下载 `AIRAs-Diary-v3.0.7z`。
 
 - **已内置 embedding 模型**（Xenova/paraphrase-multilingual-MiniLM-L12-v2，ONNX 量化版，约 113MB），无需联网下载
 - 解压后编辑 `backend/.env.example` 为 `backend/.env`，填入 API Key
