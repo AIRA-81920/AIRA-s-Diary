@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import useStore from '../services/store.js'
 import { rippleSwitchTheme } from '../services/themeTransition.js'
-import { X, Settings, Globe, Eye, EyeOff } from 'lucide-react'
+import { X, Settings, Globe, Eye, EyeOff, Archive, RotateCcw, Trash2, Clock } from 'lucide-react'
+// v12 快照机制：快照管理区块需要调用快照 API（列表/恢复/物理删除）
+import api from '../services/api.js'
 
 // 各 Agent 元信息：label 显示名、description 描述、color 圆点颜色
 // v11 多模态扩展：新增 VISION（识图）、DISTILL（提炼）
@@ -178,7 +180,7 @@ function ApiSettingsTab() {
       {/* 全局默认 */}
       <div>
         <h3 className="text-ink/50 text-[10px] uppercase tracking-[0.2em] mb-3 font-sans">全局默认</h3>
-        <div className="bg-veil/[0.03] border border-line/[0.06] rounded-xl p-5 space-y-1">
+        <div className="glow-card bg-veil/[0.03] border border-line/[0.06] rounded-xl p-5 space-y-1">
           <FormField label="API 密钥" hint="所有 Agent 共用的默认密钥">
             <PasswordInput
               value={local.global.api_key || ''}
@@ -219,11 +221,11 @@ function ApiSettingsTab() {
             const isExpanded = expandedAgent === key
             const hasOverride = !!(cfg?.model || cfg?.api_key || cfg?.base_url || (cfg?.temperature !== null && cfg?.temperature !== undefined))
             return (
-              <div key={key} className="bg-veil/[0.03] border border-line/[0.06] rounded-xl overflow-hidden transition-all">
+              <div key={key} className="glow-card bg-veil/[0.03] border border-line/[0.06] rounded-xl overflow-hidden transition-all">
                 <button
                   type="button"
                   onClick={() => setExpandedAgent(isExpanded ? null : key)}
-                  className="w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-veil/[0.03] transition-colors"
+                  className="glow-btn w-full flex items-center gap-3 px-5 py-3.5 text-left hover:bg-veil/[0.03] transition-colors rounded-xl"
                 >
                   <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: meta.color }} />
                   <div className="flex-1 min-w-0">
@@ -271,7 +273,7 @@ function ApiSettingsTab() {
       {/* 联网搜索 */}
       <div>
         <h3 className="text-ink/50 text-[10px] uppercase tracking-[0.2em] mb-3 font-sans">联网搜索</h3>
-        <div className="bg-veil/[0.03] border border-line/[0.06] rounded-xl p-5">
+        <div className="glow-card bg-veil/[0.03] border border-line/[0.06] rounded-xl p-5">
           <FormField label="Serper API 密钥" hint="用于对话中的联网搜索，留空则不启用。获取：serper.dev">
             <PasswordInput
               value={local.search.serper_api_key || ''}
@@ -284,7 +286,7 @@ function ApiSettingsTab() {
 
       {/* 检测结果展示区：有结果时淡入显示 */}
       {testResults && (
-        <div className="bg-veil/[0.03] border border-line/[0.06] rounded-xl p-4 space-y-2 animate-[fadeIn_0.2s_ease-out]">
+        <div className="glow-card bg-veil/[0.03] border border-line/[0.06] rounded-xl p-4 space-y-2 animate-[fadeIn_0.2s_ease-out]">
           <div className="flex items-center justify-between mb-2">
             <h4 className="text-ink/60 text-[10px] uppercase tracking-[0.2em] font-sans">检测结果</h4>
             <button
@@ -340,7 +342,7 @@ function ApiSettingsTab() {
             type="button"
             onClick={handleTest}
             disabled={settingsTesting || settingsSaving}
-            className="glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all disabled:opacity-50"
+            className="glow-btn glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all disabled:opacity-50"
           >
             {settingsTesting ? (
               <>
@@ -356,7 +358,7 @@ function ApiSettingsTab() {
             type="button"
             onClick={handleSave}
             disabled={settingsSaving || settingsTesting}
-            className="btn-accent flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
+            className="glow-btn btn-accent flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium disabled:opacity-50"
           >
             {settingsSaving ? (
               <div className="animate-spin rounded-full h-4 w-4 border-2 border-line/30 border-t-white" />
@@ -403,7 +405,7 @@ function AppearanceTab() {
                   key={key}
                   type="button"
                   onClick={handlePick(key)}
-                  className={`flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
+                  className={`glow-btn flex items-center gap-3 p-3 rounded-lg border transition-all text-left ${
                     active
                       ? 'bg-veil/[0.06] border-line/10 cursor-default'
                       : 'bg-veil/[0.02] border-line/[0.05] cursor-pointer hover:bg-veil/[0.06] hover:border-line/[0.12]'
@@ -529,6 +531,19 @@ export default function SettingsPanel() {
               </svg>
               <span>外观设置</span>
             </button>
+            {/* v12 快照管理：软删除的灵感（回收站），支持恢复/物理删除 */}
+            <button
+              type="button"
+              onClick={() => setActiveTab('snapshot')}
+              className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-all text-sm ${
+                activeTab === 'snapshot'
+                  ? 'text-ink/90 bg-veil/[0.06] border-r-2 border-cyan-400/50'
+                  : 'text-ink/40 hover:text-ink/60 hover:bg-veil/[0.03]'
+              }`}
+            >
+              <Archive size={14} />
+              <span>快照管理</span>
+            </button>
           </nav>
         </div>
 
@@ -537,7 +552,7 @@ export default function SettingsPanel() {
           {/* 顶部栏 */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-line/[0.06]">
             <h2 className="text-sm font-medium text-ink/80">
-              {activeTab === 'api' ? 'API 设置' : '外观设置'}
+              {activeTab === 'api' ? 'API 设置' : activeTab === 'snapshot' ? '快照管理' : '外观设置'}
             </h2>
             <button
               type="button"
@@ -567,12 +582,180 @@ export default function SettingsPanel() {
               </div>
             ) : activeTab === 'api' ? (
               <ApiSettingsTab />
+            ) : activeTab === 'snapshot' ? (
+              // v12 快照管理：软删除灵感列表（回收站）
+              <SnapshotTab />
             ) : (
               <AppearanceTab />
             )}
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ============================================================
+// v12 快照管理区块
+// 功能：展示软删除（回收站）的灵感快照，支持恢复与物理删除
+// 实现方式：
+//   - 挂载时 getSnapshots() 拉取快照列表（按删除时间倒序）
+//   - 每张卡片显示标题、删除时间、剩余保留天数
+//   - "恢复"：restoreSnapshot 清除软删标记 → 刷新侧边栏列表 + 快照列表
+//   - "删除"：先进入确认态，二次点击才 purgeSnapshot（物理删除，不可恢复）
+//   - 空状态：Archive 图标 + 引导文案
+// ============================================================
+function SnapshotTab() {
+  const [snapshots, setSnapshots] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [confirmingId, setConfirmingId] = useState(null)
+
+  // 加载快照列表
+  const loadSnapshots = async () => {
+    setLoading(true)
+    setError('')
+    try {
+      const res = await api.getSnapshots()
+      setSnapshots(res.data || [])
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    loadSnapshots()
+  }, [])
+
+  // 恢复快照：清除软删标记 → 回到删除前文件夹 → 刷新侧边栏列表
+  const handleRestore = async (id) => {
+    try {
+      await api.restoreSnapshot(id)
+      // 恢复后同步刷新主界面灵感列表（侧边栏立即出现该灵感）
+      await useStore.getState().loadInspirations()
+      // 恢复后刷新文件夹计数（灵感回到原文件夹，数量 +1）
+      useStore.getState().loadFolders()
+      loadSnapshots()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  // 物理删除快照：先确认再删除（二次点击），删除后刷新列表
+  const handlePurge = async (id) => {
+    if (confirmingId !== id) {
+      setConfirmingId(id)
+      return
+    }
+    try {
+      await api.purgeSnapshot(id)
+      setConfirmingId(null)
+      loadSnapshots()
+    } catch (err) {
+      setError(err.message)
+    }
+  }
+
+  // 剩余保留天数：deleted_until - now，向上取整
+  const remainingDays = (deletedUntil) => {
+    const diff = new Date(deletedUntil).getTime() - Date.now()
+    return Math.max(0, Math.ceil(diff / (24 * 60 * 60 * 1000)))
+  }
+
+  // 删除时间格式化：YYYY-MM-DD HH:mm
+  const formatTime = (iso) => {
+    if (!iso) return ''
+    const d = new Date(iso)
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-6 w-6 border-2 border-cyan-400/30 border-t-cyan-400" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <p className="text-red-400/80 text-sm">加载失败：{error}</p>
+        <button type="button" onClick={loadSnapshots} className="text-ink/40 text-xs hover:text-ink/60 transition-colors">
+          重试
+        </button>
+      </div>
+    )
+  }
+
+  if (snapshots.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 gap-3 text-center px-6">
+        <Archive size={32} className="text-ink/10" strokeWidth={1.5} />
+        <p className="text-ink/30 text-sm">暂无快照</p>
+        <p className="text-ink/20 text-xs leading-relaxed">
+          删除的灵感会先进入快照区保留 30 天，期间可随时恢复
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-2.5">
+      {/* 顶部说明条 */}
+      <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-cyan-400/[0.05] border border-cyan-400/10">
+        <Clock size={13} className="text-cyan-400/60 flex-shrink-0" />
+        <p className="text-[11px] text-ink/40 leading-relaxed">
+          快照默认保留 30 天，到期自动清除；恢复后灵感回到删除前的文件夹
+        </p>
+      </div>
+
+      {/* 快照列表卡片 */}
+      {snapshots.map((snap) => {
+        const days = remainingDays(snap.deleted_until)
+        const isConfirming = confirmingId === snap.id
+        return (
+          <div
+            key={snap.id}
+            className="flex items-center gap-3 px-4 py-3 rounded-xl border border-line/[0.08] bg-veil/[0.04] transition-all"
+          >
+            {/* 标题与元信息 */}
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-ink/80 truncate">{snap.title || '（无标题）'}</p>
+              <p className="text-[11px] text-ink/30 mt-0.5">
+                删除于 {formatTime(snap.deleted_at)} · 剩余 {days} 天
+              </p>
+            </div>
+
+            {/* 操作区：恢复 / 物理删除（二次确认） */}
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+              <button
+                type="button"
+                onClick={() => handleRestore(snap.id)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs text-cyan-400/80 hover:text-cyan-300 hover:bg-cyan-400/10 transition-all"
+              >
+                <RotateCcw size={13} />
+                恢复
+              </button>
+              <button
+                type="button"
+                onClick={() => handlePurge(snap.id)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition-all ${
+                  isConfirming
+                    ? 'text-white bg-red-500/80 hover:bg-red-500'
+                    : 'text-red-400/60 hover:text-red-400 hover:bg-red-500/10'
+                }`}
+              >
+                <Trash2 size={13} />
+                {isConfirming ? '确认删除' : '删除'}
+              </button>
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

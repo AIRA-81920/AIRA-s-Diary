@@ -23,9 +23,20 @@ const router = express.Router();
 // 端点：POST /api/inspirations/:id/coalesce/scan
 router.post('/inspirations/:id/coalesce/scan', ctrl.scan);
 
-// 力导向图全量数据：返回 nodes + edges（dismissed 不下发）
+// 端点：POST /api/coalesce/scan-all（全量扫描，网络图左下角按钮触发）
+router.post('/coalesce/scan-all', ctrl.scanAll);
+
+// 力导向图全量数据：返回 nodes + edges + pendingCount（dismissed 不下发）
 // 端点：GET /api/coalesce/graph
 router.get('/coalesce/graph', ctrl.getGraph);
+
+// pending 桥梁数量与上次查看时间（供前端显示未策展待办徽章）
+// 端点：GET /api/coalesce/pending-count
+router.get('/coalesce/pending-count', ctrl.getPendingCount);
+
+// 标记网络图已被用户查看（更新 app_meta.coalesce_last_seen_at）
+// 端点：POST /api/coalesce/mark-seen
+router.post('/coalesce/mark-seen', ctrl.markNetworkSeen);
 
 // 策展：确认或忽略桥梁（幂等）
 // 端点：PATCH /api/coalesce/bridges/:bridgeId

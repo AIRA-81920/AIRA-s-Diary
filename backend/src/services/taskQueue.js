@@ -25,6 +25,7 @@
 import { db, saveDb } from '../database/db.js';
 import FingerprintService from './fingerprintService.js';
 import EmbeddingService from './embeddingService.js';
+import { FINGERPRINT_INPUT_LIMITS } from '../config/constants.js';
 // v11 多模态扩展：视觉识图与文件提炼服务
 // 无循环依赖（visionService/distillService 均不 import taskQueue），可静态导入
 import VisionService from './visionService.js';
@@ -204,12 +205,45 @@ export const TaskQueue = {
   },
 
   /**
+   * 计算三源向量（共用工具）
+   * 功能：对指纹 / 标题 / 正文三个源各自向量化，返回可供写入的 blob 集合
+   * 实现方式：
+   *   1. 读 inspirations 取 title / content（正文截断 ≤FINGERPRINT_INPUT_LIMITS.CONTENT_EXCERPT，防超时）
+   *   2. 对每个存在的源调 EmbeddingService.embed 得到向量，转 blob
+   *   3. 某源为空文本则对应 blob 为 null（召回按该源缺失跳过，权重自动分摊）
+   * @private
+   * @param {string} inspirationId - 灵感 ID
+   * @param {string} fingerprint - 指纹文本（LLM 凝练的核心意思）
+   * @returns {Promise<{ fingerprintBlob, titleBlob, contentBlob }>}
+   */
+  async _computeThreeSourceBlobs(inspirationId, fingerprint) {
+    // 1. 读灵感标题/正文
+    const insp = queryOne('SELECT title, content FROM inspirations WHERE id = ?', [inspirationId]);
+    const titleText = insp?.title ? String(insp.title).slice(0, FINGERPRINT_INPUT_LIMITS.CONTENT_EXCERPT) : '';
+    const contentText = insp?.content ? String(insp.content).slice(0, FINGERPRINT_INPUT_LIMITS.CONTENT_EXCERPT) : '';
+
+    // 2. 三源各自向量化（某源为空则跳过，blob 置 null）
+    const [fpVec, titleVec, contentVec] = await Promise.all([
+      EmbeddingService.embed(fingerprint),
+      titleText ? EmbeddingService.embed(titleText) : Promise.resolve(null),
+      contentText ? EmbeddingService.embed(contentText) : Promise.resolve(null)
+    ]);
+
+    // 3. 转 blob
+    return {
+      fingerprintBlob: EmbeddingService.toBlob(fpVec),
+      titleBlob: titleVec ? EmbeddingService.toBlob(titleVec) : null,
+      contentBlob: contentVec ? EmbeddingService.toBlob(contentVec) : null
+    };
+  },
+
+  /**
    * 处理 fingerprint 任务
-   * 功能：生成指纹 → 用指纹计算 embedding → 写入 inspiration_embeddings.embedding 列 + stale=0
+   * 功能：生成指纹 → 三源（标题/正文/指纹）各算一个 embedding → 写入对应三列 + stale=0
    * 实现方式：
    *   1. FingerprintService.generate 生成指纹（已落库 stale=1）
-   *   2. EmbeddingService.embed(fingerprint) 得到 384 维向量
-   *   3. UPDATE inspiration_embeddings SET embedding=?, model_name=?, stale=0, embedding_updated_at=?
+   *   2. _computeThreeSourceBlobs 计算指纹/标题/正文三个向量
+   *   3. UPDATE inspiration_embeddings SET embedding/embedding_title/embedding_content + stale=0
    *   4. 成功后入队 INCREMENTAL_SCAN（新灵感 vs 全库候选对更新，架构 §6.1 流程一）
    * @private
    * @param {string} inspirationId
@@ -218,20 +252,20 @@ export const TaskQueue = {
     // 1. 生成指纹（已落库 stale=1）
     const { fingerprint } = await FingerprintService.generate({ inspirationId });
 
-    // 2. 计算 embedding
-    const vec = await EmbeddingService.embed(fingerprint);
+    // 2. 计算三源向量
+    const { fingerprintBlob, titleBlob, contentBlob } = await this._computeThreeSourceBlobs(inspirationId, fingerprint);
 
-    // 3. 写入 embedding BLOB + stale=0
-    const blob = EmbeddingService.toBlob(vec);
+    // 3. 写入三列 BLOB + stale=0
     const now = new Date().toISOString();
     db.run(
       `UPDATE inspiration_embeddings
-       SET embedding = ?, model_name = ?, stale = 0, embedding_updated_at = ?
+       SET embedding = ?, embedding_title = ?, embedding_content = ?,
+           model_name = ?, stale = 0, embedding_updated_at = ?
        WHERE inspiration_id = ?`,
-      [blob, EmbeddingService.modelName, now, inspirationId]
+      [fingerprintBlob, titleBlob, contentBlob, EmbeddingService.modelName, now, inspirationId]
     );
     saveDb();
-    console.log(`[TaskQueue] embedding saved for ${inspirationId} (dim=${vec.length}, stale=0)`);
+    console.log(`[TaskQueue] embedding saved for ${inspirationId} (dim=384, multi-source, stale=0)`);
 
     // 4. 入队增量扫描（新灵感 vs 全库候选对更新，架构 §6.1 流程一）
     //    不阻塞当前任务完成；若 embedding 未 ready 则 incrementalUpdate 内部静默跳过
@@ -253,17 +287,17 @@ export const TaskQueue = {
       return await this._handleFingerprint(inspirationId);
     }
 
-    const vec = await EmbeddingService.embed(fingerprint);
-    const blob = EmbeddingService.toBlob(vec);
+    const { fingerprintBlob, titleBlob, contentBlob } = await this._computeThreeSourceBlobs(inspirationId, fingerprint);
     const now = new Date().toISOString();
     db.run(
       `UPDATE inspiration_embeddings
-       SET embedding = ?, model_name = ?, stale = 0, embedding_updated_at = ?
+       SET embedding = ?, embedding_title = ?, embedding_content = ?,
+           model_name = ?, stale = 0, embedding_updated_at = ?
        WHERE inspiration_id = ?`,
-      [blob, EmbeddingService.modelName, now, inspirationId]
+      [fingerprintBlob, titleBlob, contentBlob, EmbeddingService.modelName, now, inspirationId]
     );
     saveDb();
-    console.log(`[TaskQueue] embedding refreshed for ${inspirationId} (dim=${vec.length})`);
+    console.log(`[TaskQueue] embedding refreshed for ${inspirationId} (dim=384, multi-source)`);
   },
 
   /**
@@ -333,10 +367,36 @@ export const TaskQueue = {
       return;
     }
 
-    // 1. 调视觉模型生成描述（LLM 失败由 visionService 内部 withRetry 兜底，仍失败则向上抛错）
-    const { description } = await VisionService.describeForAddendum({ addendumId, filename });
+    // 1. 组装灵感语境（标题+指纹）：从 addendum 反查所属灵感，用于提示词贴合
+    //    实现方式：读 addendum 的 inspiration_id → 查 inspirations.title → FingerprintService.getFingerprint
+    //    - 灵感存在且有标题/指纹时，把 context 传给 visionService（描述贴合灵感材料）
+    //    - 反之不走贴合，退回纯客观描述（用户约定：缺语境时不强求关联）
+    let context = null;
+    try {
+      const addendumRow = queryOne(
+        'SELECT inspiration_id FROM inspiration_addenda WHERE id = ?',
+        [addendumId]
+      );
+      if (addendumRow?.inspiration_id) {
+        const inspRow = queryOne(
+          'SELECT title FROM inspirations WHERE id = ?',
+          [addendumRow.inspiration_id]
+        );
+        if (inspRow?.title) {
+          const fingerprint = FingerprintService.getFingerprint(addendumRow.inspiration_id);
+          context = { title: inspRow.title, fingerprint: fingerprint || '' };
+        }
+      }
+    } catch (e) {
+      // 语境查询失败不阻塞识图：降级为纯客观描述
+      console.warn(`[TaskQueue] vision context lookup failed for ${addendumId}: ${e.message}`);
+    }
 
-    // 2. 读 addendum 行（addendum 不存在时静默跳过）
+    // 2. 调视觉模型生成描述（LLM 失败由 visionService 内部 withRetry 兜底，仍失败则向上抛错；
+    //    context 携带灵感语境，识图结果可贴合灵感材料）
+    const { description } = await VisionService.describeForAddendum({ addendumId, filename, context });
+
+    // 3. 读 addendum 行（addendum 不存在时静默跳过）
     const row = queryOne(
       'SELECT images_json FROM inspiration_addenda WHERE id = ?',
       [addendumId]
@@ -346,7 +406,7 @@ export const TaskQueue = {
       return;
     }
 
-    // 3. 解析 images_json → 找到对应 filename 条目 → 更新 description + status='ready'
+    // 4. 解析 images_json → 找到对应 filename 条目 → 更新 description + status='ready'
     let images = [];
     try {
       images = row.images_json ? JSON.parse(row.images_json) : [];
@@ -363,7 +423,7 @@ export const TaskQueue = {
     images[idx].description = description;
     images[idx].status = 'ready';
 
-    // 4. 写回 images_json + 更新 updated_at
+    // 5. 写回 images_json + 更新 updated_at
     const now = new Date().toISOString();
     db.run(
       'UPDATE inspiration_addenda SET images_json = ?, updated_at = ? WHERE id = ?',

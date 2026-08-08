@@ -381,6 +381,7 @@ export function listAllSavedReplies() {
   // LEFT JOIN 保证：即使灵感或追加主帖被删除（理论上 FK 会级联，这里防御性处理），仍能返回记录
   // v9：新增 r.core / r.context 字段，前端列表预览优先用 core，无 core 时降级用 answer
   // v10：WHERE r.converted = 0 — 已转化的对话从"接着想"面板移除
+  // fix：过滤 i.deleted_at IS NULL — 已软删除（快照中）灵感的保存对话不出现在"继续思考"面板
   return queryAll(
     `SELECT
        r.id AS id,
@@ -397,7 +398,7 @@ export function listAllSavedReplies() {
      FROM saved_ai_replies r
      LEFT JOIN inspiration_addenda a ON r.addendum_id = a.id
      LEFT JOIN inspirations i ON r.inspiration_id = i.id
-     WHERE r.converted = 0
+     WHERE r.converted = 0 AND i.deleted_at IS NULL
      ORDER BY r.saved_at DESC`
   );
 }

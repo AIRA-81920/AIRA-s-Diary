@@ -18,6 +18,7 @@
 import React, { useState, useEffect } from 'react'
 import { X, PenLine, FileText, Trash2, Sparkles, Loader2 } from 'lucide-react'
 import DropZone from './DropZone.jsx'
+import AutoTextArea from './AutoTextArea.jsx'
 import * as api from '../services/api.js'
 import useStore from '../services/store.js'
 
@@ -312,13 +313,14 @@ function InspirationModal({ inspiration, onSave, onClose }) {
               <label className="block text-[11px] font-medium text-ink/50 mb-2 uppercase tracking-wider font-sans">
                 内容
               </label>
-              <textarea
+              <AutoTextArea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                rows={6}
+                onChange={(v) => setContent(v)}
                 placeholder={distillEnabled && !content.trim() ? '将由 AI 提炼内容...' : '详细描述你的灵感...'}
                 disabled={distillEnabled && !content.trim()}
-                className={`input-accent w-full px-4 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/25 resize-none font-sans ${distillEnabled && !content.trim() ? 'opacity-60 cursor-not-allowed' : ''}`}
+                minRows={6}
+                maxHeight={400}
+                className={`input-accent w-full px-4 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/25 font-sans ${distillEnabled && !content.trim() ? 'opacity-60 cursor-not-allowed' : ''}`}
               />
             </div>
 
@@ -445,7 +447,7 @@ function InspirationModal({ inspiration, onSave, onClose }) {
               type="button"
               onClick={onClose}
               disabled={saving}
-              className="glass-card px-5 py-2.5 rounded-xl text-ink/60 hover:text-ink/80 text-sm font-medium transition-colors font-sans disabled:opacity-50"
+              className="glow-btn glass-card px-5 py-2.5 rounded-xl text-ink/60 hover:text-ink/80 text-sm font-medium transition-colors font-sans disabled:opacity-50"
             >
               取消
             </button>
@@ -453,7 +455,7 @@ function InspirationModal({ inspiration, onSave, onClose }) {
               type="button"
               onClick={handleSave}
               disabled={!canSave}
-              className="btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans flex items-center gap-1.5"
+              className="glow-btn btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans flex items-center gap-1.5"
             >
               {/* 保存中显示 loading 图标 */}
               {saving && <Loader2 size={13} className="animate-spin" />}

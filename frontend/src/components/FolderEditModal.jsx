@@ -111,7 +111,7 @@ function FolderEditModal() {
                   key={key}
                   type="button"
                   onClick={() => setColor(val)}
-                  className={`w-7 h-7 rounded-full transition-all duration-200 ${
+                  className={`glow-btn w-7 h-7 rounded-full transition-all duration-200 ${
                     color === val
                       ? 'ring-2 ring-offset-2 ring-offset-[rgb(var(--deep2-rgb))] scale-110'
                       : 'hover:scale-110'
@@ -136,7 +136,7 @@ function FolderEditModal() {
                 type="color"
                 value={color}
                 onChange={(e) => setColor(e.target.value)}
-                className="w-10 h-10 rounded-lg border border-line/10 cursor-pointer bg-transparent p-0.5"
+                className="glow-btn w-10 h-10 rounded-lg border border-line/10 cursor-pointer bg-transparent p-0.5"
               />
               <span className="text-ink/40 text-xs font-mono">{color}</span>
             </div>
@@ -163,7 +163,7 @@ function FolderEditModal() {
           <button
             type="button"
             onClick={handleSave}
-            className="btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans"
+            className="glow-btn btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans"
           >
             完成
           </button>

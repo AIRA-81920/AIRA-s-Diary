@@ -34,7 +34,10 @@ const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 // v11：版本从 10 升到 11，多模态输入扩展
 //      inspirations 新增 source_files_json / title_ai_generated / content_ai_generated
 //      inspiration_addenda 新增 files_json；images_json 语义升级在读取层兼容，迁移不写数据
-export const CURRENT_VERSION = 11;
+// v13：版本从 12 升到 13，embedding 多源加权
+//      inspiration_embeddings 新增 embedding_title / embedding_content 两列
+//      支撑召回按「标题 + 正文 + 指纹」三源加权合成相似度
+export const CURRENT_VERSION = 13;
 
 // 数据库单例（initDb 完成后赋值）
 export let db = null;
@@ -130,6 +133,20 @@ SELECT 1;
     // v11 SQL 部分仅记录版本号；实际 ALTER 由 migrateV11 函数处理（见 migrations/v11_multimodal.js）
     // 新增 inspirations.source_files_json / title_ai_generated / content_ai_generated
     // 新增 inspiration_addenda.files_json；images_json 语义升级在读取层兼容
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 12,
+    name: 'v12_snapshots',
+    // v12 SQL 部分仅记录版本号；实际 ALTER 由 migrateV12 函数处理（见 migrations/v12_snapshots.js）
+    // 快照机制（软删除/回收站）：inspirations 新增 deleted_at / deleted_until 两列
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 13,
+    name: 'v13_embedding_multi_source',
+    // v13 SQL 部分仅记录版本号；实际 ALTER 由 migrateV13 函数处理（见 migrations/v13_embedding_multi_source.js）
+    // 多源加权：inspiration_embeddings 新增 embedding_title / embedding_content 两列
     sql: 'SELECT 1;'
   }
 ];
@@ -422,6 +439,47 @@ export function saveDb() {
   fs.writeFileSync(absPath, Buffer.from(data));
 }
 
+// ========== app_meta 键值元数据工具函数 ==========
+// 功能：供后台服务（如 CoalesceReaperService）读写运行状态时间戳等元数据
+// 实现方式：基于 app_meta 表（key TEXT PRIMARY KEY, value TEXT），UPSERT 语义
+// 注意：setMeta 会同步 saveDb 落盘，调用方无需额外保存
+
+/**
+ * 读取 app_meta 中的指定键值
+ * 功能：按 key 查询 app_meta 表，返回 value 字符串；不存在返回 null
+ * 实现方式：prepare → bind → step → getAsObject → free
+ * @param {string} key - 元数据键名
+ * @returns {string|null} 元数据值（字符串），不存在时返回 null
+ */
+export function getMeta(key) {
+  if (!db) return null;
+  const stmt = db.prepare('SELECT value FROM app_meta WHERE key = ?');
+  stmt.bind([key]);
+  const row = stmt.step() ? stmt.getAsObject() : null;
+  stmt.free();
+  return row ? row.value : null;
+}
+
+/**
+ * 写入 app_meta 中的指定键值（UPSERT 语义，幂等）
+ * 功能：向 app_meta 表写入键值对，已存在则更新，不存在则插入，写后立即落盘
+ * 实现方式：INSERT OR REPLACE INTO app_meta + saveDb
+ * @param {string} key - 元数据键名
+ * @param {string|number} value - 元数据值（自动转字符串存储）
+ * @returns {void}
+ */
+export function setMeta(key, value) {
+  if (!db) {
+    console.warn('[DB] setMeta called but db is not initialized');
+    return;
+  }
+  db.run(
+    'INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)',
+    [key, String(value)]
+  );
+  saveDb();
+}
+
 // 执行 schema.sql，创建所有表（使用 IF NOT EXISTS 保证幂等）
 function applySchema(SQL, database) {
   const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf-8');
@@ -500,6 +558,18 @@ async function runAllMigrations(database) {
       if (migration.version === 11) {
         const { migrateV11 } = await import('./migrations/v11_multimodal.js');
         migrateV11(database);
+      }
+      // v12 特殊处理：快照机制（软删除）字段
+      // inspirations 加 deleted_at / deleted_until
+      if (migration.version === 12) {
+        const { migrateV12 } = await import('./migrations/v12_snapshots.js');
+        migrateV12(database);
+      }
+      // v13 特殊处理：embedding 多源加权
+      // inspiration_embeddings 加 embedding_title / embedding_content
+      if (migration.version === 13) {
+        const { migrateV13 } = await import('./migrations/v13_embedding_multi_source.js');
+        migrateV13(database);
       }
       // 记录迁移版本（使用参数绑定防止注入）
       database.run(

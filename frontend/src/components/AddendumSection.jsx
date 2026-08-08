@@ -20,6 +20,9 @@ import useStore from '../services/store.js'
 import { uploadAddendumImage, uploadAddendumFile } from '../services/api.js'
 // 任务 16 新增：DropZone 全屏拖放浮窗组件（任务 14 已完成）
 import DropZone from './DropZone.jsx'
+// v11 多模态扩展：长文本折叠 + 自适应高度 textarea
+import CollapsibleText from './CollapsibleText.jsx'
+import AutoTextArea from './AutoTextArea.jsx'
 
 /**
  * @param {object} props
@@ -59,6 +62,24 @@ function AddendumSection({ inspirationId }) {
       setExpandedComments((prev) => ({ ...prev, [commentDraft.addendumId]: true }))
     }
   }, [commentDraft])
+
+  // v16 异步识图：判断是否还有"识图中"的图片（status==='generating'）
+  // 实现方式：遍历 addenda.images，只要存在 generating 状态的图片即视为"后台仍在识图"
+  const hasGeneratingImage = addenda.some((a) =>
+    (a.images || []).some((img) => img && typeof img === 'object' && img.status === 'generating')
+  )
+
+  // v16 异步识图轮询：保存后用户无需留在弹窗等待，识图在后台进行，
+  // 此处一旦发现存在"识图中"图片就周期性 loadAddenda，直到全部识别完成自动停止
+  // （create / edit 保存后都生效；与灵感列表 DISTILL 回填的体验保持一致）
+  useEffect(() => {
+    if (!inspirationId || !hasGeneratingImage) return
+    const timer = setInterval(() => {
+      // silent=true：后台静默刷新，避免周期性切换 addendaLoading 导致列表抽搐
+      loadAddenda(inspirationId, true)
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [inspirationId, hasGeneratingImage, loadAddenda])
 
   /** 切换评论区展开/收起 */
   const toggleComments = (addendumId) => {
@@ -114,7 +135,7 @@ function AddendumSection({ inspirationId }) {
         <button
           type="button"
           onClick={handleCreate}
-          className="glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs font-medium transition-all group"
+          className="glow-btn glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs font-medium transition-all group"
         >
           <Plus size={13} className="transition-transform group-hover:scale-110" style={{ color: 'var(--accent-cyan)' }} />
           <span>追加</span>
@@ -204,17 +225,20 @@ function AddendumCard({
   return (
     <>
     <div
-      className="glass-card rounded-xl p-4 transition-all"
+      className="glow-card glass-card rounded-xl p-4 transition-all"
       style={{
         background: 'rgb(var(--deep2-rgb) / 0.5)',
         border: '1px solid rgb(var(--ink) / 0.05)'
       }}
     >
-      {/* 文本内容（保留换行） */}
+      {/* 文本内容（保留换行，长文本折叠到 6 行 + 展开按钮） */}
       {addendum.content && (
-        <div className="text-ink/70 text-sm leading-[1.7] whitespace-pre-wrap font-sans mb-3">
-          {addendum.content}
-        </div>
+        <CollapsibleText
+          text={addendum.content}
+          maxLines={6}
+          className="text-ink/70 text-sm leading-[1.7] font-sans"
+          wrapperClassName="mb-3"
+        />
       )}
 
       {/* 链接列表 */}
@@ -237,18 +261,51 @@ function AddendumCard({
         </div>
       )}
 
-      {/* 图片缩略图网格（点击可预览大图） */}
+      {/* 图片缩略图列表：每张图缩略图 + 其下展示识图描述/状态
+          实现方式：遍历 images 对象数组，缩略图可点击预览大图；缩略图下方按 status 显示
+          - generating：蓝转圈"识图中..."（后台识图进行中）
+          - ready/confirmed：显示识别到的 description 全文（识图完成自动浮现）
+          - failed：红色小字"识别失败" */}
       {images.length > 0 && (
-        <div className="grid grid-cols-4 gap-2 mb-3">
-          {images.map((img, i) => (
-            <img
-              key={i}
-              src={`/uploads/addenda/${typeof img === 'string' ? img : img.filename}`}
-              alt={`追加图片 ${i + 1}`}
-              onClick={() => setPreviewImg(`/uploads/addenda/${typeof img === 'string' ? img : img.filename}`)}
-              className="w-full h-20 object-cover rounded-md border border-line/5 cursor-pointer hover:opacity-80 transition-opacity"
-            />
-          ))}
+        <div className="space-y-2 mb-3">
+          {images.map((img, i) => {
+            const filename = typeof img === 'string' ? img : img.filename
+            const status = typeof img === 'string' ? 'ready' : (img.status || 'ready')
+            const desc = (typeof img === 'string' ? '' : (img.description || '')).trim()
+            return (
+              <div
+                key={i}
+                className="glass-card rounded-md p-2 flex items-start gap-2.5"
+                style={{
+                  background: 'rgb(var(--deep2-rgb) / 0.35)',
+                  border: '1px solid rgb(var(--ink) / 0.05)'
+                }}
+              >
+                <img
+                  src={`/uploads/addenda/${filename}`}
+                  alt={`追加图片 ${i + 1}`}
+                  onClick={() => setPreviewImg(`/uploads/addenda/${filename}`)}
+                  className="w-16 h-16 object-cover rounded-md border border-line/5 cursor-pointer hover:opacity-80 transition-opacity flex-shrink-0"
+                />
+                <div className="flex-1 min-w-0 py-0.5">
+                  {status === 'generating' ? (
+                    <div className="flex items-center gap-2 text-ink/50 text-xs font-sans">
+                      <Loader2 size={13} className="animate-spin" style={{ color: 'var(--accent-cyan)' }} />
+                      <span>识图中...</span>
+                    </div>
+                  ) : status === 'failed' ? (
+                    <p className="text-xs font-sans" style={{ color: 'var(--accent-amber)' }}>
+                      识别失败
+                    </p>
+                  ) : desc ? (
+                    <p className="text-ink/60 text-xs leading-[1.6] whitespace-pre-wrap font-sans">
+                      {desc}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            )
+          })}
         </div>
       )}
 
@@ -262,7 +319,7 @@ function AddendumCard({
           <button
             type="button"
             onClick={onEdit}
-            className="p-1.5 rounded-md text-ink/30 hover:text-ink/80 hover:bg-veil/5 transition-all"
+            className="glow-btn p-1.5 rounded-md text-ink/30 hover:text-ink/80 hover:bg-veil/5 transition-all"
             title="编辑"
           >
             <Pencil size={13} />
@@ -277,7 +334,7 @@ function AddendumCard({
                 setConfirmingDelete(true)
               }
             }}
-            className={`rounded-md transition-all flex items-center gap-1 ${
+            className={`glow-btn rounded-md transition-all flex items-center gap-1 ${
               confirmingDelete
                 ? 'px-2 py-1 bg-red-500/20 text-red-400'
                 : 'p-1.5 text-ink/30 hover:text-red-400 hover:bg-red-500/10'
@@ -301,7 +358,7 @@ function AddendumCard({
           <button
             type="button"
             onClick={onExplore}
-            className="p-1.5 rounded-md text-ink/30 hover:text-ink/80 hover:bg-veil/5 transition-all"
+            className="glow-btn p-1.5 rounded-md text-ink/30 hover:text-ink/80 hover:bg-veil/5 transition-all"
             title="探究"
           >
             <Search size={13} />
@@ -356,7 +413,7 @@ function AddendumCard({
         <button
           type="button"
           onClick={() => setPreviewImg(null)}
-          className="modal-close-btn absolute top-4 right-4 p-2 rounded-lg glass-card text-ink/60"
+          className="glow-btn modal-close-btn absolute top-4 right-4 p-2 rounded-lg glass-card text-ink/60"
         >
           <X size={20} />
         </button>
@@ -414,10 +471,10 @@ function CommentItem({ comment, onUpdate, onDelete }) {
   if (editing) {
     return (
       <div className="flex items-start gap-2">
-        <textarea
+        <AutoTextArea
           ref={inputRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(v) => setText(v)}
           onBlur={handleSave}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -425,8 +482,9 @@ function CommentItem({ comment, onUpdate, onDelete }) {
               handleSave()
             }
           }}
-          rows={2}
-          className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 resize-none font-sans"
+          minRows={2}
+          maxHeight={300}
+          className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 font-sans"
         />
       </div>
     )
@@ -435,12 +493,14 @@ function CommentItem({ comment, onUpdate, onDelete }) {
   return (
     <div className="group flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-veil/[0.02] transition-colors">
       <div className="flex-1 min-w-0">
-        {/* 核心文本（始终可见，点击进入编辑） */}
-        <p className="text-ink/60 text-xs leading-[1.6] whitespace-pre-wrap font-sans cursor-text"
-           onClick={() => setEditing(true)}
-        >
-          {comment.content}
-        </p>
+        {/* 核心文本（始终可见，点击进入编辑；长文本折叠到 6 行） */}
+        <div onClick={() => setEditing(true)} className="cursor-text">
+          <CollapsibleText
+            text={comment.content}
+            maxLines={6}
+            className="text-ink/60 text-xs leading-[1.6] font-sans"
+          />
+        </div>
         {/* v9：context 折叠区（阐释部分，点击展开/收起） */}
         {hasContext && (
           <div className="mt-1">
@@ -552,12 +612,13 @@ function CommentInput({ draft, onDraftConsumed, onSubmit }) {
     <div className="mt-2 space-y-1.5">
       {/* 主输入框（核心文本） */}
       <div className="flex items-end gap-2">
-        <textarea
+        <AutoTextArea
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(v) => setText(v)}
           placeholder="写下你的评论..."
-          rows={1}
-          className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 placeholder-ink/25 resize-none font-sans"
+          minRows={1}
+          maxHeight={200}
+          className="input-accent flex-1 px-3 py-1.5 rounded-md text-xs text-ink/80 placeholder-ink/25 font-sans"
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
@@ -569,7 +630,7 @@ function CommentInput({ draft, onDraftConsumed, onSubmit }) {
           type="button"
           onClick={handleSubmit}
           disabled={!text.trim()}
-          className="glass-card p-1.5 rounded-md text-ink/40 hover:text-ink/80 disabled:opacity-30 transition-all"
+          className="glow-btn glass-card p-1.5 rounded-md text-ink/40 hover:text-ink/80 disabled:opacity-30 transition-all"
           title="发送评论"
         >
           <Send size={13} />
@@ -589,13 +650,14 @@ function CommentInput({ draft, onDraftConsumed, onSubmit }) {
             </button>
           </div>
           {contextOpen && (
-            <textarea
+            <AutoTextArea
               ref={contextRef}
               value={contextText}
-              onChange={(e) => setContextText(e.target.value)}
+              onChange={(v) => setContextText(v)}
               placeholder="补充阐释..."
-              rows={2}
-              className="input-accent w-full px-3 py-1.5 rounded-md text-xs text-ink/60 placeholder-ink/25 resize-none font-sans"
+              minRows={2}
+              maxHeight={300}
+              className="input-accent w-full px-3 py-1.5 rounded-md text-xs text-ink/60 placeholder-ink/25 font-sans"
             />
           )}
         </div>
@@ -657,10 +719,11 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
 
   // 编辑模式下轮询 loadAddenda，定时刷新 addendum 数据以同步图片识图状态
   // 实现方式：setInterval 每 3 秒调用 loadAddenda(inspirationId)，组件卸载时清理
+  // 注意：silent=true 静默刷新，避免切换 addendaLoading 导致弹窗/列表画面抽搐
   useEffect(() => {
     if (mode !== 'edit' || !addendum?.id || !inspirationId) return
     const timer = setInterval(() => {
-      loadAddenda(inspirationId)
+      loadAddenda(inspirationId, true)
     }, 3000)
     return () => clearInterval(timer)
   }, [mode, addendum?.id, inspirationId, loadAddenda])
@@ -895,13 +958,14 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
               <label className="block text-[11px] font-medium text-ink/50 mb-2 uppercase tracking-wider font-sans">
                 内容
               </label>
-              <textarea
+              <AutoTextArea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
-                rows={5}
+                onChange={(v) => setContent(v)}
                 autoFocus
                 placeholder="记录你的追加思考...（可拖入图片/文件）"
-                className="input-accent w-full px-4 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/25 resize-none font-sans"
+                minRows={5}
+                maxHeight={400}
+                className="input-accent w-full px-4 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/25 font-sans"
               />
             </div>
 
@@ -950,7 +1014,7 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
                 <button
                   type="button"
                   onClick={handleAddLink}
-                  className="glass-card flex items-center gap-1 px-3 py-2 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all"
+                  className="glow-btn glass-card flex items-center gap-1 px-3 py-2 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all"
                 >
                   <Plus size={12} />
                   <span>添加</span>
@@ -1015,7 +1079,7 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
 
             {/* 上传按钮（保留点击选择图片的交互，与 DropZone 拖放并存） */}
             {images.length === 0 && files.length === 0 && (
-              <label className="glass-card flex items-center gap-1.5 px-3 py-2 rounded-lg text-ink/60 hover:text-ink/90 text-xs cursor-pointer transition-all w-fit">
+              <label className="glow-card glass-card flex items-center gap-1.5 px-3 py-2 rounded-lg text-ink/60 hover:text-ink/90 text-xs cursor-pointer transition-all w-fit">
                 {uploading ? (
                   <Loader2 size={12} className="animate-spin" />
                 ) : (
@@ -1038,7 +1102,7 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
             <button
               type="button"
               onClick={onClose}
-              className="glass-card px-5 py-2.5 rounded-xl text-ink/60 hover:text-ink/80 text-sm font-medium transition-colors font-sans"
+              className="glow-btn glass-card px-5 py-2.5 rounded-xl text-ink/60 hover:text-ink/80 text-sm font-medium transition-colors font-sans"
             >
               取消
             </button>
@@ -1046,7 +1110,7 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
               type="button"
               onClick={handleSave}
               disabled={!canSave}
-              className="btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans"
+              className="glow-btn btn-accent px-5 py-2.5 rounded-xl text-white text-sm font-medium font-sans"
             >
               保存
             </button>
@@ -1070,7 +1134,7 @@ function AddendumInputModal({ mode, addendum, inspirationId, onSave, onClose }) 
           <button
             type="button"
             onClick={() => setPreviewImg(null)}
-            className="modal-close-btn absolute top-4 right-4 p-2 rounded-lg glass-card text-ink/60"
+            className="glow-btn modal-close-btn absolute top-4 right-4 p-2 rounded-lg glass-card text-ink/60"
           >
             <X size={20} />
           </button>
@@ -1122,17 +1186,18 @@ function ImageCard({ image, onRemove, onEditDescription, onConfirm, onRetry, onP
           {/* ready 状态：描述 textarea + "纳入正文"按钮 */}
           {status === 'ready' && (
             <div className="space-y-2">
-              <textarea
+              <AutoTextArea
                 value={description}
-                onChange={(e) => onEditDescription(e.target.value)}
+                onChange={(v) => onEditDescription(v)}
                 placeholder="图片描述（可编辑，纳入正文后插入到内容末尾）..."
-                rows={2}
-                className="input-accent w-full px-2 py-1 rounded-md text-xs text-ink/80 placeholder-ink/25 resize-none font-sans"
+                minRows={2}
+                maxHeight={200}
+                className="input-accent w-full px-2 py-1 rounded-md text-xs text-ink/80 placeholder-ink/25 font-sans"
               />
               <button
                 type="button"
                 onClick={onConfirm}
-                className="flex items-center gap-1 px-2 py-1 rounded-md text-xs text-ink/60 hover:text-ink/90 transition-all glass-card"
+                className="glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-xs text-ink/60 hover:text-ink/90 transition-all glass-card"
                 style={{ borderColor: 'rgb(var(--cyan-rgb) / 0.2)' }}
                 title="将描述作为一段文字插入到内容末尾"
               >

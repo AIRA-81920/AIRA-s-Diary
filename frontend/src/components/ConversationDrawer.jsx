@@ -191,7 +191,7 @@ function ConversationDrawer() {
   return (
     // 抽屉主容器：挤压式（与 Detail 并列），宽度过渡 400ms
     <div
-      className={`relative flex-shrink-0 overflow-hidden ${mounted ? 'animate-fade-in' : ''} ${dragging ? 'panel-transitioning' : ''}`}
+      className={`insp-themed relative flex-shrink-0 overflow-hidden ${mounted ? 'animate-fade-in' : ''} ${dragging ? 'panel-transitioning' : ''}`}
       style={{
         width: mounted ? `${drawerWidth}px` : '0px',
         transition: dragging ? 'none' : 'width 400ms cubic-bezier(0.16, 1, 0.3, 1)',
@@ -384,7 +384,8 @@ function ConversationDrawer() {
             type="button"
             onClick={handleSend}
             disabled={!question.trim() || conversationLoading}
-            className="btn-accent p-2.5 rounded-lg text-white disabled:opacity-30 transition-all"
+            className="glow-btn btn-accent p-2.5 rounded-lg text-white disabled:opacity-30 transition-all"
+            data-glow="amber"
             title="发送"
           >
             <Send size={16} />

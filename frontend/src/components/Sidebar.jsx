@@ -1,4 +1,4 @@
-﻿// Sidebar 灵感列表组件（v8 文件夹分组 + dnd-kit 拖拽 + Android 式合并创建）
+// Sidebar 灵感列表组件（v8 文件夹分组 + dnd-kit 拖拽 + Android 式合并创建）
 // 功能：
 //   - 展开态：搜索框 + 文件夹树（可展开/折叠）+ 散灵感列表
 //   - 挤压态（抽屉打开时）：80px 图标模式
@@ -25,6 +25,9 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { Search, Brain, Plus, ChevronRight, Folder as FolderIcon, FolderPlus, Pencil } from 'lucide-react'
 import { formatTime } from '../services/store.js'
+// UI 精修：类型色小色点 + 微光系统动态色工具
+import { getInspirationTypeColor } from '../services/themeTokens.js'
+import { hexToRgb } from '../services/glowSystem.js'
 
 // ========== 渐变色工具 ==========
 
@@ -106,6 +109,11 @@ function InspirationItem({
   const [renameText, setRenameText] = useState(inspiration.title || '')
   const renameRef = useRef(null)
 
+  // UI 精修：类型色小色点（9 种类型各一色，未知类型不显示）
+  const typeColor = getInspirationTypeColor(inspiration.inspiration_type)
+  // UI 精修：文件夹内条目微光用文件夹色（动态 RGB），散灵感用默认青色
+  const glowRgb = folderColor ? hexToRgb(folderColor) : null
+
   // 进入重命名态时聚焦并全选
   useEffect(() => {
     if (isRenaming && renameRef.current) {
@@ -135,38 +143,50 @@ function InspirationItem({
         e.stopPropagation()
         if (!isRenaming && onContextMenu) onContextMenu(e, inspiration)
       }}
-      className={`glass-card w-full text-left px-4 py-3 rounded-xl relative overflow-hidden group transition-all duration-300 cursor-pointer ${
+      className={`glow-card glass-card w-full text-left px-4 py-3 rounded-xl relative overflow-hidden group transition-all duration-300 cursor-pointer ${
         isSelected ? 'bg-veil/[0.06]' : 'hover:bg-veil/[0.04]'
       } ${isMergeTarget ? 'scale-[1.03] ring-1 ring-cyan-400/50' : ''}`}
-      style={
-        isSelected
+      style={{
+        // UI 精修：文件夹内条目 --glow 用文件夹色，微光跟随鼠标并同色呼应
+        '--glow': glowRgb || undefined,
+        ...(isSelected
           ? { boxShadow: `inset 3px 0 0 ${accentColor}, 0 0 20px rgb(var(--cyan-rgb) / 0.08)` }
           : isMergeTarget
             ? { boxShadow: '0 0 24px rgb(var(--cyan-rgb) / 0.15)', transform: 'scale(1.03)' }
-            : undefined
-      }
+            : {})
+      }}
       {...dragHandleProps}
     >
-      {/* 标题：重命名态显示输入框，否则显示文本 */}
-      {isRenaming ? (
-        <input
-          ref={renameRef}
-          type="text"
-          value={renameText}
-          onChange={(e) => setRenameText(e.target.value)}
-          onBlur={handleRenameSubmit}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') handleRenameSubmit()
-            if (e.key === 'Escape') onRenameCancel()
-          }}
-          onClick={(e) => e.stopPropagation()}
-          className="input-accent w-full px-2 py-0.5 rounded-md text-ink/85 font-medium text-sm font-sans"
-        />
-      ) : (
-        <p className="text-ink/85 font-medium text-sm truncate font-sans">
-          {inspiration.title}
-        </p>
-      )}
+      {/* 标题行：重命名态显示输入框，否则显示文本；右侧为类型小色点 */}
+      <div className="flex items-center gap-1.5">
+        {isRenaming ? (
+          <input
+            ref={renameRef}
+            type="text"
+            value={renameText}
+            onChange={(e) => setRenameText(e.target.value)}
+            onBlur={handleRenameSubmit}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') handleRenameSubmit()
+              if (e.key === 'Escape') onRenameCancel()
+            }}
+            onClick={(e) => e.stopPropagation()}
+            className="input-accent w-full px-2 py-0.5 rounded-md text-ink/85 font-medium text-sm font-sans flex-1 min-w-0"
+          />
+        ) : (
+          <p className="text-ink/85 font-medium text-sm truncate font-sans flex-1 min-w-0">
+            {inspiration.title}
+          </p>
+        )}
+        {/* UI 精修：8px 类型色小色点（与网络图节点同色板，不占位） */}
+        {typeColor && (
+          <span
+            className="w-2 h-2 rounded-full flex-shrink-0"
+            style={{ background: typeColor, boxShadow: `0 0 6px ${typeColor}80` }}
+            title={inspiration.inspiration_type || ''}
+          />
+        )}
+      </div>
       <p className="text-ink/35 text-[11px] mt-1 font-sans tracking-wide">
         {formatTime(inspiration.created_at)}
       </p>
@@ -301,11 +321,13 @@ function FolderItem({
       {/* 文件夹标题行 */}
       <div
         ref={setDropRef}
-        className={`relative rounded-xl transition-all duration-300 cursor-pointer select-none overflow-hidden ${
+        className={`glow-card relative rounded-xl transition-all duration-300 cursor-pointer select-none overflow-hidden ${
           isOver ? 'ring-1 ring-cyan-400/50' : ''
         }`}
         style={{
-          background: folderGradientIdle(folder.color)
+          background: folderGradientIdle(folder.color),
+          // UI 精修：文件夹条目微光用文件夹色（与内部灵感同色，强化分组认知）
+          '--glow': hexToRgb(folder.color) || undefined
         }}
         onClick={() => onToggleExpand(folder.id)}
         onContextMenu={(e) => {
@@ -694,10 +716,10 @@ function Sidebar({
   if (compressed) {
     return (
       <aside className="h-full w-full flex flex-col items-center py-4 gap-3 border-r border-line/5">
-        <button type="button" title="搜索灵感" className="w-10 h-10 rounded-xl flex items-center justify-center text-ink/40 hover:text-ink/80 hover:bg-veil/[0.06] transition-all">
+        <button type="button" title="搜索灵感" className="glow-btn w-10 h-10 rounded-xl flex items-center justify-center text-ink/40 hover:text-ink/80 hover:bg-veil/[0.06] transition-all">
           <Search size={16} />
         </button>
-        <button type="button" onClick={onNewInspiration} title="新建灵感" className="w-10 h-10 rounded-xl flex items-center justify-center text-ink/40 hover:text-ink/80 hover:bg-veil/[0.06] transition-all">
+        <button type="button" onClick={onNewInspiration} title="新建灵感" className="glow-btn w-10 h-10 rounded-xl flex items-center justify-center text-ink/40 hover:text-ink/80 hover:bg-veil/[0.06] transition-all">
           <Plus size={16} />
         </button>
         <div className="w-6 h-px bg-veil/5 my-1" />
@@ -711,7 +733,7 @@ function Sidebar({
               type="button"
               onClick={() => onSelectInspiration(ins)}
               title={ins.title}
-              className={`w-10 h-10 rounded-xl flex items-center justify-center text-sm font-medium transition-all relative ${
+              className={`glow-btn w-10 h-10 rounded-xl flex items-center justify-center text-sm font-medium transition-all relative ${
                 isSelected ? 'text-ink/90' : 'text-ink/40 hover:text-ink/80 hover:bg-veil/[0.06]'
               }`}
               style={isSelected ? { background: 'rgb(var(--cyan-rgb) / 0.15)', color: accentColor, boxShadow: `inset 0 0 0 1px ${accentColor}4D` } : undefined}
@@ -733,17 +755,23 @@ function Sidebar({
   // ========== 展开态 ==========
   return (
     <aside className="h-full w-full flex flex-col border-r border-line/5">
-      {/* 搜索框 */}
-      <div className="p-5 border-b border-line/5">
-        <div className="relative">
-          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-ink/30 pointer-events-none" />
+      {/* 搜索框：浮动标签输入框（Uiverse cowardly-jellyfish-52 移植）
+          结构：input + 图标 + 标签 span 依次排列
+          placeholder 设为单个空格，配合 CSS :not(:placeholder-shown)
+          检测输入状态，无需引入额外 React 状态
+          容器：px-5 左右留白不变，py-3 上下收窄，使搜索区更紧凑 */}
+      <div className="px-5 py-3 border-b border-line/5">
+        <div className="gal-search">
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            placeholder="搜索灵感..."
-            className="input-accent w-full pl-10 pr-3 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/30"
+            placeholder=" "
+            className="gal-search-input"
           />
+          {/* 图标置于 input 之后：CSS 用后续兄弟选择器 :focus ~ .gal-search-icon 做聚焦提亮 */}
+          <Search size={16} className="gal-search-icon" />
+          <span className="gal-search-label">搜索灵感...</span>
         </div>
       </div>
 

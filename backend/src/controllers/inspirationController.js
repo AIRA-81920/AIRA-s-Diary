@@ -2,11 +2,16 @@
 // 统一响应格式：{ success, data } 或 { success, error }
 // 所有方法使用 try/catch 包裹，异常返回 500
 
+import fs from 'fs';
+import path from 'path';
 import { Inspiration } from '../models/Inspiration.js';
 import inspirationStorage from '../services/inspirationStorage.js';
 import TaskQueue, { TASK_KINDS } from '../services/taskQueue.js';
 import { db, saveDb } from '../database/db.js';
 import { computeDistillMode } from '../services/distillService.js';
+
+// 新建灵感源文件的物理存储目录（与 addendumController uploadFiles storage 一致）
+const NEOIDEA_DIR = path.resolve(process.cwd(), 'uploads/neoidea');
 
 // 塑形灵感响应对象（v11 多模态扩展）
 // 功能：解析 source_files_json → source_files 字段，整型字段强制转 Number（SQL.js 可能返回字符串）
@@ -163,9 +168,51 @@ export async function triggerDistill(req, res) {
   }
 }
 
-// 删除灵感
-// 实现：调用 Inspiration.delete（含级联清理）→ 删除 per-inspiration 文件夹 → 返回成功
+// 删除灵感（v12 改造：软删除进入快照区）
+// 实现：调用 Inspiration.softDelete（设置 deleted_at/deleted_until）→ 灵感目录与关联数据全部保留
+// 说明：快照默认保留 30 天，到期由后台定时任务物理清理；用户可在设置面板恢复或手动物理删除
 export async function remove(req, res) {
+  try {
+    const updated = Inspiration.softDelete(req.params.id, SNAPSHOT_RETENTION_DAYS);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: '灵感不存在' });
+    }
+    res.json({ success: true, data: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// ========== v12 快照（软删除/回收站）端点 ==========
+
+// 快照保留天数：默认 30 天（deleted_until = deleted_at + 30d，到期自动物理清理）
+const SNAPSHOT_RETENTION_DAYS = 30;
+
+// 快照列表：所有软删除的灵感，按删除时间倒序
+export async function listSnapshots(req, res) {
+  try {
+    const data = Inspiration.listSnapshots({ limit: 100, offset: 0 });
+    res.json({ success: true, data });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// 恢复快照：清除软删除标记，灵感回到删除前的文件夹
+export async function restoreSnapshot(req, res) {
+  try {
+    const updated = Inspiration.restore(req.params.id);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: '快照不存在' });
+    }
+    res.json({ success: true, data: updated });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// 物理删除快照：数据库级联清理 + 删除灵感目录（不可恢复，需用户确认）
+export async function purgeSnapshot(req, res) {
   try {
     Inspiration.delete(req.params.id);
     await inspirationStorage.removeStorage(req.params.id);
@@ -242,6 +289,71 @@ export async function reorder(req, res) {
     }
     Inspiration.batchUpdateSortOrder(items);
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+}
+
+// 读取灵感的某个源文件原文内容（v11 多模态扩展：原文浮窗功能依赖）
+// 功能：按 inspirationId 查 DB 的 source_files_json，校验请求的 filename 属于该灵感，
+//       然后从 uploads/neoidea/<filename> 读取文本内容返回
+// 路由：GET /inspirations/:id/files/:filename
+// 安全要点：
+//   1. 必须先从 DB 取 source_files 列表，校验 filename 在列表中（防止路径遍历/越权读取他人文件）
+//   2. path.basename 防止 filename 含路径分隔符（如 ../）
+//   3. 仅允许 .md/.txt 等文本文件（与上传时的 fileFilter 一致）
+export async function getFileContent(req, res) {
+  try {
+    const { id, filename } = req.params;
+    // 防 path traversal：只取 basename
+    const safeName = path.basename(filename);
+    if (safeName !== filename) {
+      return res.status(400).json({ success: false, error: 'Invalid filename' });
+    }
+
+    // 从 DB 取灵感记录，解析 source_files_json
+    const inspiration = Inspiration.getById(id);
+    if (!inspiration) {
+      return res.status(404).json({ success: false, error: 'Inspiration not found' });
+    }
+
+    // 解析 source_files 列表，校验请求的 filename 在其中
+    let sourceFiles = [];
+    if (inspiration.source_files_json) {
+      try {
+        sourceFiles = JSON.parse(inspiration.source_files_json) || [];
+      } catch {
+        sourceFiles = [];
+      }
+    }
+    const matched = sourceFiles.find((f) => f && f.filename === safeName);
+    if (!matched) {
+      return res.status(404).json({ success: false, error: 'File not found in this inspiration' });
+    }
+
+    // 物理文件路径
+    const filePath = path.join(NEOIDEA_DIR, safeName);
+    // 二次校验：filePath 必须仍在 NEOIDEA_DIR 之下（防止符号链接等绕过）
+    if (!filePath.startsWith(NEOIDEA_DIR + path.sep) && filePath !== NEOIDEA_DIR) {
+      return res.status(400).json({ success: false, error: 'Invalid file path' });
+    }
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ success: false, error: 'File not found on disk' });
+    }
+
+    // 读取文本内容（utf-8）
+    const content = fs.readFileSync(filePath, 'utf-8');
+    // 返回原文 + 文件元信息（前端浮窗展示用）
+    res.json({
+      success: true,
+      data: {
+        filename: safeName,
+        original_name: matched.original_name || matched.originalName || safeName,
+        size: matched.size || 0,
+        format: matched.format || (matched.original_name ? matched.original_name.split('.').pop().toLowerCase() : ''),
+        content,
+      },
+    });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

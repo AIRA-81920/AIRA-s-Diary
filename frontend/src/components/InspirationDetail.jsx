@@ -11,19 +11,22 @@
 //   - StageAccordion 互斥展开（§10.4 expandedStage）
 //   - StageBadge 显示阶段状态（§9.2 badges）
 //   - 行动栏召唤工作台抽屉（K3-e 实现，此处预留入口）
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Brain, Pencil, Trash2, Clock, FileText, X,
   Sparkles, Link2, AlertCircle, Loader2, Check, Plus, ArrowRight,
-  Lightbulb, CheckCircle2, BookOpen, RefreshCw
+  Lightbulb, CheckCircle2, BookOpen, RefreshCw, ChevronRight
 } from 'lucide-react'
 import { formatTime } from '../services/store.js'
 import useStore from '../services/store.js'
-// v11 多模态扩展：重试提炼后需刷新单个灵感数据
-import { getInspiration } from '../services/api.js'
+// v11 多模态扩展：重试提炼后需刷新单个灵感数据 + 原文浮窗读取文件内容
+import { getInspiration, getInspirationFileContent } from '../services/api.js'
 import StageBadge from './StageBadge.jsx'
 import StageAccordion from './StageAccordion.jsx'
 import AddendumSection from './AddendumSection.jsx'
+// v11 多模态扩展：自适应高度 textarea（content 编辑框）
+import AutoTextArea from './AutoTextArea.jsx'
 // K3-g：fragment_type 元信息单一来源（R9 防前后端枚举漂移）
 // fix：EpitaxyArchiveContent 只展示已提炼 chunks，chunk 的 kind 标签由 getFragmentKind* 提供
 import {
@@ -51,8 +54,6 @@ const BRIDGE_COLORS = new Proxy({}, {
 const BRIDGE_LABELS = {
   imagery_isomorphism:  '意象同构',
   structure_resonance:  '结构共振',
-  emotion_echo:         '情感回响',
-  technique_transfer:   '技法迁移',
   theme_opposition:     '主题对立'
 }
 
@@ -185,10 +186,11 @@ function isDistillPending(ins) {
  * @param {Function} [props.onDeselect] - 点击叉号按钮的回调（取消选中回到空状态）
  */
 function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
-  // 删除确认状态：控制内联确认浮窗的展开
-  const [confirmingDelete, setConfirmingDelete] = useState(false)
-  // 收回动画状态：点击收回时先播淡出动画再切换视图
-  const [collapsing, setCollapsing] = useState(false)
+  // gal-delete-btn 长按删除状态
+  // isPressing：是否正在长按（驱动 .gal-pressing 填充动画）
+  // pressTimer：长按定时器引用（700ms 到期触发删除，松手则清除）
+  const [isPressing, setIsPressing] = useState(false)
+  const pressTimer = useRef(null)
 
   // 从 store 读取档案馆数据与 actions
   const archiveData = useStore((s) => s.archiveData)
@@ -231,9 +233,42 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   const [contentText, setContentText] = useState('')
   const [accepting, setAccepting] = useState(false)
   const [retrying, setRetrying] = useState(false)
+  // v11 多模态扩展：原文浮窗状态
+  // sourceFileModal：null=关闭，{filename, original_name, content, format, size, loading}=加载中/已加载
+  const [sourceFileModal, setSourceFileModal] = useState(null)
   // 从 store 获取 updateInspiration（更新灵感字段）和 triggerDistill（触发 DISTILL 任务）
   const updateInspiration = useStore((s) => s.updateInspiration)
   const triggerDistill = useStore((s) => s.triggerDistill)
+
+  /**
+   * 打开原文浮窗：点击"展开原文"按钮时调用
+   * 功能：异步拉取文件内容，loading 期间先展示元信息，加载完成后填充 content
+   * 实现方式：
+   *   1. 从 inspiration.source_files 取文件列表
+   *   2. 单文件：直接拉取并展示；多文件：先展示列表，点击单个再拉取
+   *   3. 异步调用 getInspirationFileContent，失败显示错误信息
+   */
+  const handleOpenSourceFile = async (filename) => {
+    // 先打开浮窗（loading 态）
+    setSourceFileModal({ filename, loading: true })
+    try {
+      const res = await getInspirationFileContent(inspiration.id, filename)
+      if (res.success && res.data) {
+        setSourceFileModal({
+          filename: res.data.filename,
+          original_name: res.data.original_name,
+          format: res.data.format,
+          size: res.data.size,
+          content: res.data.content,
+          loading: false
+        })
+      } else {
+        setSourceFileModal({ filename, error: res.error || '加载失败', loading: false })
+      }
+    } catch (err) {
+      setSourceFileModal({ filename, error: err.message, loading: false })
+    }
+  }
 
   // v11：DISTILL 自动刷新轮询
   // 问题：DISTILL 是后台异步任务（taskQueue），完成后无推送机制，UI 会一直停留在"提炼中"
@@ -316,22 +351,24 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   }
 
   /**
-   * 处理删除：内联确认，确认后调用 onDelete
-   * 收回过程先播淡出动画再切换视图，保证过渡顺滑
+   * gal-delete-btn 长按删除交互
+   * 按下：启动 1500ms 定时器 + isPressing=true（触发红色填充动画）
+   * 到期：调用 onDelete 执行删除
+   * 松手/离开：清除定时器 + isPressing=false（填充回弹，不删除）
    */
-  const handleDeleteClick = () => setConfirmingDelete(true)
-  const handleDeleteConfirm = () => {
-    setConfirmingDelete(false)
-    setCollapsing(false)
-    onDelete()
+  const handleDeletePressStart = () => {
+    setIsPressing(true)
+    pressTimer.current = setTimeout(() => {
+      setIsPressing(false)
+      onDelete()
+    }, 1500)
   }
-  // 收回：先触发淡出动画，250ms 后真正关闭浮窗
-  const handleDeleteCollapse = () => {
-    setCollapsing(true)
-    setTimeout(() => {
-      setConfirmingDelete(false)
-      setCollapsing(false)
-    }, 250)
+  const handleDeletePressEnd = () => {
+    setIsPressing(false)
+    if (pressTimer.current) {
+      clearTimeout(pressTimer.current)
+      pressTimer.current = null
+    }
   }
 
   // v11/v12 多模态扩展：AI 生成状态判断（v12 按需提炼：title/content 可分别处于提炼中/失败）
@@ -447,7 +484,8 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
 
   return (
     // 详情主区域：可纵向滚动
-    <main className="flex-1 flex flex-col overflow-y-auto">
+    // UI 精修：insp-themed 让该灵感下的发光组件跟随灵感类型色（--insp-glow 由 Workspace 注入）
+    <main className="insp-themed flex-1 flex flex-col overflow-y-auto">
       {/* 顶部操作栏：叉号返回 + 编辑 + 删除按钮 */}
       <div className="flex items-center justify-between gap-2 px-10 py-4 border-b border-line/5">
         {/* 左侧：返回初始状态的叉号按钮 */}
@@ -455,7 +493,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
           <button
             type="button"
             onClick={onDeselect}
-            className="modal-close-btn glass-card flex items-center justify-center w-9 h-9 rounded-lg text-ink/40 text-sm group"
+            className="glow-btn modal-close-btn glass-card flex items-center justify-center w-9 h-9 rounded-lg text-ink/40 text-sm group"
             title="返回初始界面"
           >
             <X size={16} />
@@ -464,58 +502,38 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
 
         {/* 右侧：编辑 + 删除 */}
         <div className="flex items-center gap-2 ml-auto">
+          {/* gal-edit-btn：Uiverse 移植版编辑按钮
+              默认 40×40 方形笔图标，hover 展开显示"编辑"文字，点击直接触发编辑
+              "编辑"文字由 CSS ::before 渲染，这里只放图标 */}
           <button
             type="button"
+            title="编辑"
+            className="gal-edit-btn"
             onClick={onEdit}
-            className="glass-card flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-ink/60 hover:text-ink/90 text-sm transition-all group"
           >
-            <Pencil size={14} className="transition-transform group-hover:scale-110" />
-            <span>编辑</span>
+            {/* 图标容器：hover 时 translateY(60%) 向下移出视图 */}
+            <span className="gal-edit-icon">
+              <Pencil size={14} />
+            </span>
           </button>
-          {/* 删除按钮 / 内联确认浮窗 */}
-          <div className="relative">
-            {!confirmingDelete ? (
-              <button
-                type="button"
-                onClick={handleDeleteClick}
-                className="glass-card flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-ink/60 hover:text-rose-400 text-sm transition-all group hover:border-rose-500/30"
-              >
-                <Trash2 size={14} className="transition-transform group-hover:scale-110" />
-                <span>删除</span>
-              </button>
-            ) : (
-              <div className="relative">
-                {/* 按钮原位置：变成"确认删除？"提示 + 旋转的 ×，再次点击可收回浮窗 */}
-                <button
-                  type="button"
-                  onClick={handleDeleteCollapse}
-                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg glass-card border-rose-500/40 transition-all hover:border-rose-500/60 ${collapsing ? 'animate-fade-out-down' : 'animate-fade-in-up'}`}
-                  title="点击收回"
-                >
-                  <X size={14} className="text-rose-400 animate-spin-slow" />
-                  <span className="text-rose-400 text-sm">确认删除？</span>
-                </button>
-                {/* 按钮下方展开的浮窗：absolute 定位，右对齐避免溢出 */}
-                <div className={`absolute top-full right-0 mt-1.5 flex items-center gap-2 px-3 py-2 rounded-lg glass-panel border border-rose-500/30 shadow-2xl z-50 ${collapsing ? 'animate-fade-out-down' : 'animate-fade-in-up'}`}>
-                  <button
-                    type="button"
-                    onClick={handleDeleteConfirm}
-                    className="px-2.5 py-1 rounded-md text-xs font-sans transition-all hover:scale-105"
-                    style={{ background: 'rgba(239,68,68,0.15)', color: 'var(--sem-red)', border: '1px solid rgba(239,68,68,0.3)' }}
-                  >
-                    确认
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleDeleteCollapse}
-                    className="px-2.5 py-1 rounded-md text-xs text-ink/50 hover:text-ink/85 font-sans transition-all"
-                  >
-                    取消
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          {/* gal-delete-btn：Uiverse smart-emu-83 精确移植版
+              默认 50×50 圆形纯图标，hover 展开成胶囊 + 图标下移 + "删除"文字从顶部滑入
+              "删除"文字由 CSS ::before 渲染，长按填充由 CSS ::after 承载，这里只放图标 */}
+          <button
+            type="button"
+            title="长按删除"
+            className={`gal-delete-btn ${isPressing ? 'gal-pressing' : ''}`}
+            onMouseDown={handleDeletePressStart}
+            onMouseUp={handleDeletePressEnd}
+            onMouseLeave={handleDeletePressEnd}
+            onTouchStart={handleDeletePressStart}
+            onTouchEnd={handleDeletePressEnd}
+          >
+            {/* 图标容器：hover 时 translateY(60%) 向下移出视图 */}
+            <span className="gal-del-icon">
+              <Trash2 size={14} />
+            </span>
+          </button>
         </div>
       </div>
 
@@ -617,17 +635,18 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
           style={{ animationDelay: '120ms' }}
         >
           {editingContent ? (
-            <textarea
+            <AutoTextArea
               autoFocus
               value={contentText}
-              onChange={(e) => setContentText(e.target.value)}
+              onChange={(v) => setContentText(v)}
               onBlur={saveContentEdit}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveContentEdit() }
                 if (e.key === 'Escape') { setEditingContent(false) }
               }}
-              rows={Math.min(20, Math.max(3, (contentText || '').split('\n').length))}
-              className="text-ink/70 text-[15px] leading-[1.75] w-full bg-transparent border border-cyan-500/20 rounded-lg p-2 outline-none font-sans resize-none"
+              minRows={3}
+              maxHeight={600}
+              className="text-ink/70 text-[15px] leading-[1.75] w-full bg-transparent border border-cyan-500/20 rounded-lg p-2 outline-none font-sans"
               placeholder="请输入内容..."
             />
           ) : inspiration.content ? (
@@ -664,7 +683,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
                 type="button"
                 onClick={handleAccept}
                 disabled={accepting || isDistilling}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
+                className="glow-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
                 style={{
                   background: 'rgb(var(--cyan-bright-rgb) / 0.12)',
                   color: 'var(--accent-cyan-bright)',
@@ -682,7 +701,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
                 type="button"
                 onClick={handleRetryDistill}
                 disabled={retrying}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
+                className="glow-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
                 style={{
                   background: 'rgba(168,85,247,0.12)',
                   color: 'var(--sem-purple)',
@@ -695,6 +714,129 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
               </button>
             )}
           </div>
+        )}
+
+        {/* ========== 原文文件按钮（v11 多模态扩展）==========
+            功能：当灵感含 source_files（新建时拖入的文本文件）时显示一个小按钮
+            交互：点击弹出模态浮窗，浮窗内展示文件列表，点击单个文件加载并阅读原文
+            样式：仅一个小按钮，无小标题无分隔线，符合简朴原则 */}
+        {Array.isArray(inspiration.source_files) && inspiration.source_files.length > 0 && (
+          <div className="mb-3 animate-fade-in-up" style={{ animationDelay: '180ms' }}>
+            <button
+              type="button"
+              onClick={() => setSourceFileModal({ files: inspiration.source_files })}
+              className="glow-btn glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs font-medium transition-all group"
+              title="查看新建灵感时上传的原文文件"
+            >
+              <FileText size={13} className="transition-transform group-hover:scale-110" style={{ color: 'var(--accent-cyan)' }} />
+              <span>展开原文</span>
+              <span className="text-ink/30 text-[11px]">（{inspiration.source_files.length}）</span>
+            </button>
+          </div>
+        )}
+
+        {/* 原文浮窗：sourceFileModal 非空时显示
+            状态分支：
+              - { files: [...] }：展示文件列表供选择
+              - { filename, loading: true }：单个文件加载中
+              - { filename, content, ... }：展示原文内容
+              - { filename, error }：加载失败 */}
+        {sourceFileModal && createPortal(
+          <div
+            className="fixed inset-0 z-[200] flex items-center justify-center bg-[rgb(var(--mask-rgb)_/_0.6)] backdrop-blur-md animate-fade-in-up"
+            onClick={() => setSourceFileModal(null)}
+          >
+            <div
+              className="glass-card w-full max-w-2xl mx-4 rounded-2xl shadow-2xl overflow-hidden relative"
+              style={{
+                background: 'rgb(var(--deep2-rgb) / 0.9)',
+                boxShadow: '0 20px 60px rgba(0,0,0,0.5), 0 0 0 1px rgb(var(--cyan-rgb) / 0.1)'
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* 顶部渐变光带 */}
+              <div
+                className="absolute top-0 left-0 right-0 h-px"
+                style={{ background: 'linear-gradient(90deg, transparent, rgb(var(--cyan-rgb) / 0.5), rgb(var(--amber-rgb) / 0.3), transparent)' }}
+              />
+              {/* 头部：标题 + 关闭按钮 */}
+              <div className="flex items-center justify-between px-6 py-4 border-b border-line/5">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <FileText size={16} style={{ color: 'var(--accent-cyan)' }} className="shrink-0" />
+                  <h3 className="font-display text-base font-semibold text-ink truncate">
+                    {sourceFileModal.content ? sourceFileModal.original_name : '原文文件'}
+                  </h3>
+                  {sourceFileModal.format && (
+                    <span className="text-ink/30 text-[10px] font-mono shrink-0">
+                      {sourceFileModal.format.toUpperCase()}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSourceFileModal(null)}
+                  className="glow-btn modal-close-btn p-1.5 rounded-lg text-ink/40 shrink-0"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* 主体：按状态分支渲染 */}
+              <div className="px-6 py-5 max-h-[70vh] overflow-y-auto">
+                {/* 分支 1：文件列表（多文件时点击进入） */}
+                {sourceFileModal.files && (
+                  <div className="space-y-2">
+                    <p className="text-ink/40 text-xs mb-3 font-sans">选择一个文件查看原文：</p>
+                    {sourceFileModal.files.map((file) => (
+                      <button
+                        key={file.filename}
+                        type="button"
+                        onClick={() => handleOpenSourceFile(file.filename)}
+                        className="glow-card w-full flex items-center gap-3 px-4 py-3 rounded-lg glass-card hover:bg-veil/[0.06] transition-all text-left"
+                        style={{ borderColor: 'rgb(var(--ink) / 0.05)' }}
+                      >
+                        <FileText size={14} style={{ color: 'var(--accent-cyan)' }} className="shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-ink/80 text-sm font-sans truncate">
+                            {file.original_name || file.originalName || file.filename}
+                          </p>
+                          <p className="text-ink/30 text-[10px] font-sans mt-0.5">
+                            {(file.format || (file.original_name || '').split('.').pop() || '').toUpperCase()}
+                            {file.size ? ` · ${(file.size / 1024).toFixed(1)} KB` : ''}
+                          </p>
+                        </div>
+                        <ChevronRight size={14} className="text-ink/30 shrink-0" />
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* 分支 2：加载中 */}
+                {sourceFileModal.loading && (
+                  <div className="flex items-center justify-center py-12">
+                    <Loader2 size={20} className="animate-spin text-ink/40" />
+                    <span className="ml-3 text-ink/40 text-sm font-sans">加载原文中...</span>
+                  </div>
+                )}
+
+                {/* 分支 3：加载失败 */}
+                {sourceFileModal.error && (
+                  <div className="flex flex-col items-center justify-center py-12 gap-2">
+                    <AlertCircle size={20} className="text-rose-400/70" />
+                    <p className="text-rose-400/70 text-sm font-sans">{sourceFileModal.error}</p>
+                  </div>
+                )}
+
+                {/* 分支 4：展示原文内容 */}
+                {sourceFileModal.content && (
+                  <pre className="text-ink/70 text-sm leading-[1.7] whitespace-pre-wrap font-mono break-words">
+                    {sourceFileModal.content}
+                  </pre>
+                )}
+              </div>
+            </div>
+          </div>,
+          document.body
         )}
 
         {/* ========== 追加思考（时间线日志）========== */}
@@ -813,7 +955,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
                 <button
                   type="button"
                   onClick={() => openDrawer('crystallize', inspiration.id)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all group"
+                  className="glow-btn glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all group"
                   title={hasCrystallizeCache ? '恢复上次未完成的结晶草稿' : (cState === 'done' ? '重新生成结晶体（将覆盖现有）' : '召唤灵感结晶工作台')}
                 >
                   <Sparkles size={12} className="transition-transform group-hover:scale-110" style={{ color: hasCrystallizeCache ? 'var(--accent-amber)' : 'var(--accent-cyan)' }} />
@@ -840,7 +982,8 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
                 <button
                   type="button"
                   onClick={() => openDrawer('epitaxy', inspiration.id)}
-                  className="glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all group"
+                  className="glow-btn glass-card flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs transition-all group"
+                  data-glow="purple"
                   title={hasEpitaxyCache ? '恢复上次未完成的外延草稿' : '召唤外延探究工作台'}
                 >
                   <FileText size={12} className="transition-transform group-hover:scale-110" style={{ color: hasEpitaxyCache ? 'var(--accent-amber)' : '#a855f7' }} />
@@ -980,7 +1123,7 @@ function EditableField({ fieldKey, label, value, onSave }) {
               startEdit()
             }
           }}
-          className="cursor-pointer hover:bg-veil/[0.02] rounded-md px-1 -mx-1 py-0.5 transition-colors"
+          className="glow-card glow-text cursor-pointer hover:bg-veil/[0.02] rounded-md px-1 -mx-1 py-0.5 transition-colors"
           title="点击编辑"
         >
           {isArray ? (
@@ -1391,7 +1534,7 @@ function EpitaxyArchiveContent({ proposals, chunkCount }) {
                   setExpandedProposal(isExpanded ? null : p.id)
                 }
               }}
-              className="flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-veil/[0.02] transition-colors select-none"
+              className="glow-card flex items-center justify-between px-3 py-2.5 cursor-pointer hover:bg-veil/[0.02] transition-colors select-none rounded-xl"
             >
               <div className="flex-1 min-w-0">
                 <p className="text-ink/80 text-sm font-sans font-medium truncate">
@@ -1488,7 +1631,7 @@ function CoalesceArchiveContent({
           type="button"
           onClick={onScan}
           disabled={coalesceLoading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
+          className="glow-btn flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-sans transition-all disabled:opacity-50"
           style={{
             background: 'rgb(var(--cyan-bright-rgb) / 0.1)',
             color: 'var(--accent-cyan-bright)',
@@ -1628,7 +1771,7 @@ function BridgeCard({ bridge, currentInspirationId, onCurate, onToInspiration, d
           <button
             type="button"
             onClick={() => onCurate(bridge.id, 'confirm')}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all"
+            className="glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all"
             style={{
               background: 'rgba(16,185,129,0.1)',
               color: '#10b981',
@@ -1641,7 +1784,7 @@ function BridgeCard({ bridge, currentInspirationId, onCurate, onToInspiration, d
           <button
             type="button"
             onClick={() => onCurate(bridge.id, 'dismiss')}
-            className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all"
+            className="glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all"
             style={{
               background: 'rgb(var(--ink) / 0.04)',
               color: 'rgb(var(--ink) / 0.5)',
@@ -1659,7 +1802,7 @@ function BridgeCard({ bridge, currentInspirationId, onCurate, onToInspiration, d
         <button
           type="button"
           onClick={() => onToInspiration(bridge.id)}
-          className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all mt-2"
+          className="glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all mt-2"
           style={{
             background: 'rgb(var(--cyan-bright-rgb) / 0.1)',
             color: 'var(--accent-cyan-bright)',
@@ -1707,7 +1850,7 @@ function EpitaxyLinkedView({
       <div className="space-y-4 animate-fade-in-up">
         {/* 联动状态指示 */}
         <div
-          className="flex items-center gap-2 px-3 py-2 rounded-lg"
+          className="glow-card flex items-center gap-2 px-3 py-2 rounded-lg"
           style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}
         >
           <FileText size={12} style={{ color: '#3b82f6' }} />
@@ -1752,7 +1895,7 @@ function EpitaxyLinkedView({
         )}
 
         {/* 提示卡片 */}
-        <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl" style={{ background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)' }}>
+        <div className="glow-card flex items-center gap-2.5 px-4 py-3 rounded-xl" data-glow="purple" style={{ background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)' }}>
           <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(168,85,247,0.2)', color: 'var(--sem-purple)' }}>
             <Sparkles size={13} />
           </div>
@@ -1810,7 +1953,7 @@ function EpitaxyLinkedView({
       <div className="space-y-4 animate-fade-in-up">
         {/* 联动状态指示：当前方向正在选词中 */}
         <div
-          className="flex items-center gap-2 px-3 py-2 rounded-lg"
+          className="glow-card flex items-center gap-2 px-3 py-2 rounded-lg"
           style={{ background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)' }}
         >
           <FileText size={12} style={{ color: '#3b82f6' }} />
@@ -1873,7 +2016,7 @@ function EpitaxyLinkedView({
           </div>
         ) : (
           /* 无已保存成果时，显示简洁提示 */
-          <div className="flex items-center gap-2.5 px-4 py-3 rounded-xl mt-4" style={{ background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)' }}>
+          <div className="glow-card flex items-center gap-2.5 px-4 py-3 rounded-xl mt-4" style={{ background: 'rgba(168,85,247,0.06)', border: '1px solid rgba(168,85,247,0.2)' }}>
             <div className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: 'rgba(168,85,247,0.2)', color: 'var(--sem-purple)' }}>
               <Sparkles size={13} />
             </div>

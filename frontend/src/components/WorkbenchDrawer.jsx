@@ -123,7 +123,7 @@ function WorkbenchDrawer() {
     // 抽屉主容器：K4-b 挤压式（与 Detail 并列），宽度过渡 400ms
     // fix5-4：挂载时 width=0，下一帧过渡到 drawerWidth，实现"从右滑入"动画
     <div
-      className={`relative flex-shrink-0 overflow-hidden ${mounted ? 'animate-fade-in' : ''} ${dragging ? 'panel-transitioning' : ''}`}
+      className={`insp-themed relative flex-shrink-0 overflow-hidden ${mounted ? 'animate-fade-in' : ''} ${dragging ? 'panel-transitioning' : ''}`}
       style={{
         // fix5-4：挂载前 width=0，挂载后 width=drawerWidth，触发 transition
         width: mounted ? `${drawerWidth}px` : '0px',
@@ -138,6 +138,17 @@ function WorkbenchDrawer() {
         boxShadow: `-8px 0 32px rgba(0,0,0,0.4), 0 0 0 1px ${meta.accent}10`
       }}
     >
+      {/* UI 精修：抽屉点亮动画——"光先亮、面板再滑出"
+          挂载时（mounted=true 的下一帧）光晕从左侧渐变浮现，与 width 滑入过渡同节奏 */}
+      <div
+        className="absolute inset-0 pointer-events-none"
+        style={{
+          background: `radial-gradient(ellipse 65% 45% at 0% 50%, ${meta.accent}1f, transparent 70%)`,
+          opacity: mounted ? 1 : 0,
+          transition: 'opacity 400ms cubic-bezier(0.16, 1, 0.3, 1)'
+        }}
+      />
+
       {/* 头部：标题 + 副标题 + 关闭按钮 */}
       <div
         className="flex items-center justify-between px-4 py-3 border-b border-line/5"
@@ -163,7 +174,7 @@ function WorkbenchDrawer() {
         <button
           type="button"
           onClick={closeDrawer}
-          className="modal-close-btn p-1.5 rounded-md text-ink/30"
+          className="glow-btn modal-close-btn p-1.5 rounded-md text-ink/30"
           title="关闭抽屉（中间态已保存，可继续接着干）"
         >
           <X size={14} />

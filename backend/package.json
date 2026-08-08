@@ -1,6 +1,5 @@
 {
   "name": "airas-diary-backend",
-  "version": "0.7.0",
   "description": "AIRA's Diary 后端服务 — AI 灵感管理工作流系统",
   "type": "module",
   "main": "src/server.js",

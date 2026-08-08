@@ -100,12 +100,44 @@ export function updateInspiration(id, data) {
 }
 
 /**
- * 删除灵感
+ * 删除灵感（v12：后端改为软删除，灵感进入快照区，30 天内可恢复）
  * @param {string} id
- * @returns {Promise<{success: boolean}>}
+ * @returns {Promise<{success: boolean, data: object}>}
  */
 export function deleteInspiration(id) {
   return request(`/inspirations/${id}`, {
+    method: 'DELETE'
+  })
+}
+
+// ========== v12 快照（软删除/回收站）API ==========
+
+/**
+ * 获取快照列表（软删除的灵感，按删除时间倒序）
+ * @returns {Promise<{success: boolean, data: Array}>}
+ */
+export function getSnapshots() {
+  return request('/snapshots')
+}
+
+/**
+ * 恢复快照：清除软删除标记，灵感回到删除前的文件夹
+ * @param {string} id - 快照对应的灵感 id
+ * @returns {Promise<{success: boolean, data: object}>}
+ */
+export function restoreSnapshot(id) {
+  return request(`/snapshots/${id}/restore`, {
+    method: 'POST'
+  })
+}
+
+/**
+ * 物理删除快照：数据库 + 灵感目录一并清除，不可恢复
+ * @param {string} id - 快照对应的灵感 id
+ * @returns {Promise<{success: boolean}>}
+ */
+export function purgeSnapshot(id) {
+  return request(`/snapshots/${id}`, {
     method: 'DELETE'
   })
 }
@@ -167,7 +199,7 @@ export function getArchive(id) {
 
 /**
  * 获取力导向图全量数据（K3-c 新增）
- * @returns {Promise<{success: boolean, data: {nodes: Array, edges: Array}}>}
+ * @returns {Promise<{success: boolean, data: {nodes: Array, edges: Array, pendingCount: number}}>}
  */
 export function getCoalesceGraph() {
   return request('/coalesce/graph')
@@ -193,6 +225,26 @@ export function curateBridge(bridgeId, action) {
  */
 export function bridgeToInspirationNew(bridgeId) {
   return request(`/coalesce/bridges/${bridgeId}/to-inspiration`, { method: 'POST' })
+}
+
+/**
+ * 获取待查看的桥梁数量（网络图徽标用）
+ * 功能：调用 GET /coalesce/pending-count，返回自上次 mark-seen 之后新增的桥梁数
+ * 实现方式：走 request 封装；返回 { count, lastSeenAt }，lastSeenAt 由后端管理
+ * @returns {Promise<{success: boolean, data: {count: number, lastSeenAt: string|null}}>}
+ */
+export function getCoalescePendingCount() {
+  return request('/coalesce/pending-count')
+}
+
+/**
+ * 标记网络图已查看（清除待看计数）
+ * 功能：调用 POST /coalesce/mark-seen，把当前时间记为 lastSeenAt，后续 pendingCount 重置为 0
+ * 实现方式：走 request 封装；空 body POST，后端仅做时间戳更新
+ * @returns {Promise<{success: boolean}>}
+ */
+export function markCoalesceNetworkSeen() {
+  return request('/coalesce/mark-seen', { method: 'POST' })
 }
 
 // ========== Crystallize（灵感结晶）API ==========
@@ -379,6 +431,15 @@ export function chunkToInspiration(id, chunkIds) {
  */
 export function scanCoalesce(id) {
   return request(`/inspirations/${id}/coalesce/scan`, { method: 'POST' })
+}
+
+/**
+ * 全量扫描桥梁（灵感网络左下角按钮触发）
+ * 功能：遍历全部灵感两两召回 + LLM 深挖，补齐所有缺失桥梁
+ * @returns {Promise<{success: boolean, data: {scannedPairs, newBridges, reusedBridges}}>}
+ */
+export function scanAllCoalesce() {
+  return request('/coalesce/scan-all', { method: 'POST' })
 }
 
 /**
@@ -793,6 +854,21 @@ export function triggerDistill(inspirationId) {
   })
 }
 
+/**
+ * 读取灵感源文件的原文内容（v11 多模态扩展：原文浮窗功能依赖）
+ * 功能：GET /inspirations/:id/files/:filename，返回文件文本内容 + 元信息
+ * 实现方式：走 request 封装；filename 由调用方 encodeURIComponent 防止特殊字符
+ *   - 后端会校验 filename 属于该灵感（防止越权读取），不属返回 404
+ * @param {string} inspirationId - 灵感 ID
+ * @param {string} filename - 文件名（multer 生成的随机名，存于 source_files[].filename）
+ * @returns {Promise<{success: boolean, data: {filename, original_name, size, format, content}}>}
+ */
+export function getInspirationFileContent(inspirationId, filename) {
+  return request(`/inspirations/${inspirationId}/files/${encodeURIComponent(filename)}`, {
+    method: 'GET'
+  })
+}
+
 // ========== 文件夹 API（v8 新增） ==========
 
 /**
@@ -885,6 +961,10 @@ export default {
   createInspiration,
   updateInspiration,
   deleteInspiration,
+  // v12 快照（软删除/回收站）接口
+  getSnapshots,
+  restoreSnapshot,
+  purgeSnapshot,
   searchInspirations,
   initStorage,
   savePanelState,
@@ -893,6 +973,8 @@ export default {
   getCoalesceGraph,
   curateBridge,
   bridgeToInspirationNew,
+  getCoalescePendingCount,
+  markCoalesceNetworkSeen,
   senseInspirationType,
   runCrystallize,
   getCrystallizeLatest,
@@ -908,6 +990,7 @@ export default {
   getEpitaxyChunks,
   chunkToInspiration,
   scanCoalesce,
+  scanAllCoalesce,
   getCoalesceCandidates,
   excavateCoalesceBridges,
   getCoalesceBridges,

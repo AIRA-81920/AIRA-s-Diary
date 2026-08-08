@@ -48,7 +48,15 @@ router.post('/inspirations', controller.create);
 // 单个灵感：获取/更新/删除
 router.get('/inspirations/:id', controller.get);
 router.put('/inspirations/:id', controller.update);
+// v12 快照机制：DELETE 改为软删除（灵感进入快照区，30 天内可恢复）
 router.delete('/inspirations/:id', controller.remove);
+
+// ========== v12 快照（软删除/回收站）端点 ==========
+// 功能：列表 / 恢复 / 物理删除，供设置面板"快照管理"区块使用
+// 路由前缀 /snapshots 不与 /inspirations/:id 冲突（独立资源路径）
+router.get('/snapshots', controller.listSnapshots);
+router.post('/snapshots/:id/restore', controller.restoreSnapshot);
+router.delete('/snapshots/:id', controller.purgeSnapshot);
 
 // 灵感文件存储：初始化、面板状态
 router.post('/inspirations/:id/storage/init', controller.initStorage);
@@ -73,5 +81,10 @@ router.post('/inspirations/:id/files', addendumCtrl.uploadFiles.array('files', 1
 // 功能：POST /inspirations/:id/distill，校验灵感存在 → 入队 DISTILL → 返回 {queued: true}
 // 实现：triggerDistill 是 inspirationController 的控制器方法
 router.post('/inspirations/:id/distill', controller.triggerDistill);
+
+// v11 多模态扩展：读取灵感源文件原文内容
+// 功能：GET /inspirations/:id/files/:filename，校验 filename 属于该灵感后返回文本内容
+// 用途：Detail 面板的"展开原文"浮窗展示
+router.get('/inspirations/:id/files/:filename', controller.getFileContent);
 
 export default router;

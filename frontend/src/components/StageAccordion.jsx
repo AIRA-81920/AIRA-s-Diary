@@ -49,7 +49,7 @@ function StageAccordion({ stage, badgeStage, state, meta = {}, expanded, onToggl
             onToggle?.()
           }
         }}
-        className="flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-veil/[0.02] transition-colors select-none"
+        className="glow-card flex items-center justify-between px-3 py-2 cursor-pointer hover:bg-veil/[0.02] transition-colors select-none rounded-xl"
       >
         {/* StageBadge 仅作展示，onClick 留空避免与 header 重复触发 */}
         <StageBadge

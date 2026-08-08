@@ -46,6 +46,7 @@
   --sem-blue: #60a5fa;
   --sem-purple: #c084fc;
   --sem-red: #f87171;
+  --sem-red-rgb: 248 113 113;  /* 红色 RGB 三元组（供 gal-delete-btn 等组件用透明度写法） */
   --sem-gold: #fbbf24;
 
   /* 文字色 */
@@ -99,6 +100,7 @@
   --sem-blue: #2563eb;
   --sem-purple: #9333ea;
   --sem-red: #dc2626;
+  --sem-red-rgb: 220 38 38;  /* 亮色主题红色 RGB 三元组（加深保证可读性） */
   --sem-gold: #d97706;
 
   --text-primary: rgba(27, 36, 56, 0.92);
@@ -368,31 +370,74 @@ h4 {
   }
 }
 
-/* 2. CrystalQuestioningAnim：问号闪烁淡入淡出 */
-@keyframes blinkFade {
-  0%, 100% {
-    opacity: 0.2;
-    transform: scale(0.85);
+/* 2. CrystalQuestioningAnim：小球弹跳 + 脚印前进（Uiverse loader，替换原问号闪烁） */
+/* 外层缩放容器：loader 原生 120x90，缩放到约 0.65 适配 AnimShell 的 80px 画布 */
+.crystal-loader-wrap {
+  transform: scale(0.65);
+  transform-origin: center;
+}
+.crystal-loader {
+  position: relative;
+  width: 120px;
+  height: 90px;
+  margin: 0 auto;
+}
+
+.crystal-loader:before {
+  content: "";
+  position: absolute;
+  bottom: 30px;
+  left: 50px;
+  height: 30px;
+  width: 30px;
+  border-radius: 50%;
+  background: #06b6d4;
+  animation: loading-bounce 0.5s ease-in-out infinite alternate;
+}
+
+.crystal-loader:after {
+  content: "";
+  position: absolute;
+  right: 0;
+  top: 0;
+  height: 7px;
+  width: 45px;
+  border-radius: 4px;
+  box-shadow: 0 5px 0 #f2f2f2, -35px 50px 0 #f2f2f2, -70px 95px 0 #f2f2f2;
+  animation: loading-step 1s ease-in-out infinite;
+}
+
+@keyframes loading-bounce {
+  0% {
+    transform: scale(1, 0.7);
   }
-  50% {
-    opacity: 1;
-    transform: scale(1.1);
+
+  40% {
+    transform: scale(0.8, 1.2);
+  }
+
+  60% {
+    transform: scale(1, 1);
+  }
+
+  100% {
+    bottom: 140px;
   }
 }
 
-/* 2b. 问号下方文字线条：从短到长绘制 */
-@keyframes drawLine {
+@keyframes loading-step {
   0% {
-    transform: scaleX(0);
-    opacity: 0;
+    box-shadow: 0 10px 0 rgba(0, 0, 0, 0),
+            0 10px 0 #f2f2f2,
+            -35px 50px 0 #f2f2f2,
+            -70px 90px 0 #f2f2f2;
   }
-  50% {
-    transform: scaleX(1);
-    opacity: 0.6;
-  }
+
   100% {
-    transform: scaleX(0);
-    opacity: 0;
+    box-shadow: 0 10px 0 #f2f2f2,
+            -35px 50px 0 #f2f2f2,
+            -70px 90px 0 #f2f2f2,
+            -70px 90px 0 rgba(0, 0, 0, 0);
   }
 }
 
@@ -513,6 +558,48 @@ h4 {
   100% {
     stroke-dasharray: 50 0;
     opacity: 0;
+  }
+}
+
+/* ============================================================
+   AIRA 头像交互动画
+   ============================================================ */
+
+/* 弹跳动画：单击头像时触发，快速向上跳起后回落带轻微弹跳
+   关键帧节奏：30%到达最高点(-10px) → 50%回落 → 65%小弹(-3px) → 80%稳定 */
+@keyframes avatarBounce {
+  0% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-10px);
+  }
+  50% {
+    transform: translateY(0);
+  }
+  65% {
+    transform: translateY(-3px);
+  }
+  80% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(0);
+  }
+}
+
+/* 雨刮式抖动动画：长按头像时触发，在 ±--shake-angle 之间往返旋转
+   --shake-angle 由 JS 通过 RAF 实时更新（增长/衰减），实现幅度动态变化
+   配合 200ms 周期 + ease-in-out，模拟雨刮器"快扫-到位-反向"的手感 */
+@keyframes avatarShake {
+  0% {
+    transform: rotate(calc(var(--shake-angle, 0deg) * -1));
+  }
+  50% {
+    transform: rotate(var(--shake-angle, 0deg));
+  }
+  100% {
+    transform: rotate(calc(var(--shake-angle, 0deg) * -1));
   }
 }
 
@@ -789,3 +876,425 @@ h4 {
   color: #f87171; /* red-400 */
   background-color: rgb(var(--veil) / 0.06);
 }
+
+/* ============================================================
+   微光系统（glowSystem，配套 frontend/src/services/glowSystem.js）
+   功能：可互动组件的"鼠标跟随光斑 + 边框呼应"效果
+   实现方式：
+     - glowSystem.js 全局事件委托设置 --mx/--my（光斑坐标）与 .glow-active（激活态）
+     - 光斑用 ::after 径向渐变绘制（叠在组件背景之上、内容之下，模拟"毛玻璃里的光"）
+     - 边框呼应改用 inset box-shadow（不依赖 border-color，避免被组件内联 border 覆盖）
+     - 颜色通过 --glow（RGB 三元组）按 data-glow 指定；背板不带发光类即不发光
+   分层契约：背板（静态展示）不发光；只有浮在背板上的可互动组件发光
+   扩展：新增颜色 = glowSystem.js 注册表加 key + 下方加一个 --glow-* 变量与 [data-glow] 选择器
+   ============================================================ */
+
+/* 颜色注册（dark 默认 / light 覆盖，与 themeTokens 语义色同一模式） */
+:root {
+  --glow-cyan: 6 182 212;    /* 默认交互（青） */
+  --glow-amber: 245 158 11;  /* 特殊功能（琥珀） */
+  --glow-purple: 168 85 247; /* 网络/外延强调（紫） */
+}
+:root[data-theme='light'] {
+  --glow-cyan: 8 145 178;
+  --glow-amber: 217 119 6;
+  --glow-purple: 147 51 234;
+}
+
+/* 发光基类：按钮 / 卡片通用（套上即发光，新组件无需写额外逻辑） */
+.glow-btn,
+.glow-card {
+  --mx: 50%;                 /* 光斑 X 坐标（默认居中，事件委托实时更新） */
+  --my: 50%;                 /* 光斑 Y 坐标 */
+  --glow: var(--glow-cyan);  /* 光斑颜色（RGB 三元组，默认青） */
+  --glow-strength: 0.28;     /* 光斑强度（暗色档） */
+  position: relative;
+  overflow: hidden;          /* 光斑不溢出圆角 */
+}
+
+/* 按 data-glow 指定颜色（新增颜色在此追加选择器，与注册表 key 对应） */
+.glow-btn[data-glow='amber'],
+.glow-card[data-glow='amber'] { --glow: var(--glow-amber); }
+.glow-btn[data-glow='purple'],
+.glow-card[data-glow='purple'] { --glow: var(--glow-purple); }
+
+/* 灵感类型主题化（放在 [data-glow] 规则之后，靠后置定义覆盖）
+   功能：灵感被确认类型后，该灵感下的所有发光组件（含 data-glow 指定色）统一用类型色
+   实现：Workspace 在灵感容器上设置 --insp-glow（类型色 RGB 三元组）并加 .insp-themed 类
+   注意：内联 style 中的 --glow 优先级最高，组件层不应再写内联 --glow，否则无法被本规则覆盖 */
+.insp-themed .glow-btn,
+.insp-themed .glow-card {
+  --glow: var(--insp-glow, var(--glow-cyan));
+}
+
+/* 光斑层：跟随鼠标的径向柔光（z-index:0 使文字在光斑之上，光从玻璃里透出）
+   光圈半径 80px：克制的小光圈，贴合"整体趋于扁平"的风格 */
+.glow-btn::after,
+.glow-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: radial-gradient(
+    80px circle at var(--mx) var(--my),
+    rgb(var(--glow) / var(--glow-strength)),
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+/* 边框呼应层：独立 ::before 用 inset 光边 + opacity 过渡实现"动态展开"
+    - 用 opacity 而非直接改 border/box-shadow，保证边框是平滑浮现（动态展开）而非突变
+    - border-radius: inherit 跟随组件圆角，避免无圆角组件（如手风琴头部）出现直角光边
+    - 不占用元素自身 box-shadow/border，不干扰选中态等原有内联样式 */
+.glow-btn::before,
+.glow-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(var(--glow) / 0.45);
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+/* 激活态：光斑浮现 + 边框呼应层亮起（"被触摸"反馈） */
+.glow-btn.glow-active::after,
+.glow-card.glow-active::after {
+  opacity: 1;
+}
+.glow-btn.glow-active::before,
+.glow-card.glow-active::before {
+  opacity: 1;
+}
+
+/* 亮色主题：光斑减弱约 6 折，避免亮底刺眼 */
+:root[data-theme='light'] .glow-btn,
+:root[data-theme='light'] .glow-card {
+  --glow-strength: 0.16;
+}
+
+/* 输入聚焦时关闭微光：组件内含聚焦的输入控件（textarea/input）时，
+   隐藏光斑与边框呼应（:focus-within 覆盖激活态），避免光晕干扰书写；
+   失焦（blur）后自动恢复。覆盖场景：追加评论/阐释输入、灵感重命名、
+   结晶字段内联编辑等一切"发光组件内部输入"的情况 */
+.glow-btn:focus-within::after,
+.glow-card:focus-within::after,
+.glow-btn:focus-within::before,
+.glow-card:focus-within::before {
+  opacity: 0 !important;
+}
+
+/* 文本型可编辑组件（如结晶字段值、可点文本）：只保留边框呼应，禁用光斑
+   原因：字段是"文本行"而非卡片，光斑打在文字上会显得文字在发光，观感不佳；
+         保留 ::before 边框呼应即可提示"可点击编辑" */
+.glow-text::after {
+  display: none;
+}
+
+/* ============================================================
+   gal-delete-btn / gal-edit-btn：Uiverse smart-emu-83 移植版按钮组
+   来源：https://uiverse.io/vinodjangid07/smart-emu-83
+   共享动画机制：
+     - 默认小尺寸纯图标
+     - 展开时图标 translateY(60%) 向下移出视图（被 overflow:hidden 裁切）
+     - ::before 文字从 top:-20px translateY 滑入（font-size 2px→13px 渐显）
+   差异：
+     - delete：44×44 圆形，hover 展开 112px，红色实底，1500ms 长按确认
+     - edit：44×44 圆角方形，press 展开 100px，青色实底，300ms 短按触发
+   ============================================================ */
+
+/* ---------- 删除按钮 ---------- */
+
+/* 默认态：44×44 圆形毛玻璃按钮，只显示垃圾桶图标 */
+.gal-delete-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background-color: rgb(var(--veil) / 0.05);
+  border: 1px solid rgb(var(--line) / 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0px 0px 16px rgba(0, 0, 0, 0.164);
+  cursor: pointer;
+  transition-duration: .3s;
+  overflow: hidden;
+  position: relative;
+  color: rgb(var(--ink) / 0.6);
+}
+
+/* 图标容器：默认 12px，hover 时膨胀并向下移出
+   height: 44px 与按钮等高，使 translateY(60%) = 26px 将图标完整移出视图 */
+.gal-delete-btn .gal-del-icon {
+  width: 12px;
+  height: 44px;
+  transition-duration: .3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.gal-delete-btn .gal-del-icon svg {
+  width: 12px;
+  height: 12px;
+  transition-duration: .3s;
+}
+
+/* ::before = "删除"文字：默认 top:-20px + font-size 2px 不可见 */
+.gal-delete-btn::before {
+  position: absolute;
+  top: -20px;
+  content: "删除";
+  color: white;
+  transition-duration: .3s;
+  font-size: 2px;
+  z-index: 2;
+  white-space: nowrap;
+}
+
+/* hover：展开成胶囊，背景转红色实底 */
+.gal-delete-btn:hover {
+  width: 112px;
+  border-radius: 44px;
+  transition-duration: .3s;
+  background-color: rgb(var(--sem-red-rgb));
+  align-items: center;
+  color: white;
+  border-color: transparent;
+}
+
+/* hover：图标膨胀到 44px + translateY(60%) 向下移出视图 */
+.gal-delete-btn:hover .gal-del-icon {
+  width: 44px;
+  transition-duration: .3s;
+  transform: translateY(60%);
+}
+
+.gal-delete-btn:hover .gal-del-icon svg {
+  width: 44px;
+  height: 44px;
+  transition-duration: .3s;
+}
+
+/* hover：文字放大到 13px + translateY(26px) 从顶部滑入中心 */
+.gal-delete-btn:hover::before {
+  font-size: 13px;
+  opacity: 1;
+  transform: translateY(26px);
+  transition-duration: .3s;
+}
+
+/* ::after = 长按填充层：深色从底部向上填充，1500ms 填满即触发删除 */
+.gal-delete-btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: rgba(0, 0, 0, 0.22);
+  transform: scaleY(0);
+  transform-origin: bottom;
+  transition: transform 0.2s ease;
+}
+
+.gal-delete-btn.gal-pressing::after {
+  transform: scaleY(1);
+  transition: transform 1500ms linear;
+}
+
+/* ---------- 编辑按钮 ---------- */
+
+/* 默认态：44×44 方形毛玻璃按钮，只显示笔图标
+   方形（border-radius:12px）与删除按钮圆形形成视觉区分 */
+.gal-edit-btn {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background-color: rgb(var(--veil) / 0.05);
+  border: 1px solid rgb(var(--line) / 0.1);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0px 0px 16px rgba(0, 0, 0, 0.164);
+  cursor: pointer;
+  transition-duration: .3s;
+  overflow: hidden;
+  position: relative;
+  color: rgb(var(--ink) / 0.6);
+}
+
+/* 图标容器：默认 12px，hover 时膨胀并向下移出
+   height: 44px 与按钮等高，使 translateY(60%) = 26px 将图标完整移出视图 */
+.gal-edit-btn .gal-edit-icon {
+  width: 12px;
+  height: 44px;
+  transition-duration: .3s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2;
+}
+
+.gal-edit-btn .gal-edit-icon svg {
+  width: 12px;
+  height: 12px;
+  transition-duration: .3s;
+}
+
+/* ::before = "编辑"文字：默认 top:-20px + font-size 2px 不可见 */
+.gal-edit-btn::before {
+  position: absolute;
+  top: -20px;
+  content: "编辑";
+  color: white;
+  transition-duration: .3s;
+  font-size: 2px;
+  z-index: 2;
+  white-space: nowrap;
+}
+
+/* hover：展开成圆角方形（非胶囊），背景转青色实底，文字转白
+   border-radius 保持 12px 与默认态一致，展开后是带圆角的方形而非胶囊形 */
+.gal-edit-btn:hover {
+  width: 100px;
+  border-radius: 12px;
+  transition-duration: .3s;
+  background-color: rgb(var(--cyan-rgb));
+  align-items: center;
+  color: white;
+  border-color: transparent;
+}
+
+/* hover：图标膨胀到 44px + translateY(60%) 向下移出视图（被 overflow:hidden 裁掉） */
+.gal-edit-btn:hover .gal-edit-icon {
+  width: 44px;
+  transition-duration: .3s;
+  transform: translateY(60%);
+}
+
+.gal-edit-btn:hover .gal-edit-icon svg {
+  width: 44px;
+  height: 44px;
+  transition-duration: .3s;
+}
+
+/* hover：文字放大到 13px + translateY(26px) 从顶部滑入中心 */
+.gal-edit-btn:hover::before {
+  font-size: 13px;
+  opacity: 1;
+  transform: translateY(26px);
+  transition-duration: .3s;
+}
+
+/* ---------- 亮色主题适配 ---------- */
+
+:root[data-theme='light'] .gal-delete-btn,
+:root[data-theme='light'] .gal-edit-btn {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+:root[data-theme='light'] .gal-delete-btn::after {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ============================================================
+   gal-search：Uiverse jamaldine-hub/cowardly-jellyfish-52 移植
+   功能：侧边栏浮动标签搜索框，聚焦或有内容时标签文字上浮
+   实现方式：
+     - 容器相对定位，input 下方放置绝对定位的标签 span
+     - 用 :focus 与 :not(:placeholder-shown) 两个选择器驱动上浮，
+       无需 JS 状态（placeholder 为单个空格以触发占位符检测）
+     - 上浮时标签背景色覆盖输入框上边框，形成"嵌进边框"效果
+   ============================================================ */
+
+/* 容器：相对定位包裹输入框与浮动标签 */
+.gal-search {
+  position: relative;
+  width: 100%;
+}
+
+/* 搜索图标：绝对定位在输入框左侧（图标区），不参与布局 */
+.gal-search .gal-search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  color: var(--text-tertiary);
+  pointer-events: none;
+  transition: color 0.3s ease;
+}
+
+/* 输入框本体：玻璃态毛玻璃 + 青色描边，左侧预留图标位 */
+.gal-search .gal-search-input {
+  width: 100%;
+  padding: 10px 12px 10px 40px;
+  border: 1.5px solid rgb(var(--cyan-rgb) / 0.28);
+  outline: none;
+  border-radius: 12px;
+  color: var(--text-primary);
+  background: rgb(var(--veil) / 0.05);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-size: 14px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, background 0.3s ease;
+}
+
+/* 聚焦态：青色边框增强 + 柔和光晕 */
+.gal-search .gal-search-input:focus {
+  border-color: rgb(var(--cyan-rgb) / 0.55);
+  box-shadow: 0 0 0 3px rgb(var(--cyan-rgb) / 0.12);
+  background: rgb(var(--veil) / 0.08);
+}
+
+/* 聚焦时图标同步提亮 */
+.gal-search .gal-search-input:focus ~ .gal-search-icon {
+  color: var(--accent-cyan-bright);
+}
+
+/* 浮动标签：默认与输入文字同位置，透明不可交互 */
+.gal-search .gal-search-label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  padding: 10px 0 10px 40px;
+  font-size: 14px;
+  pointer-events: none;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  transition: 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* 上浮态：聚焦或有内容时标签上移并"嵌"进上边框
+   translateX(34px) 让标签文字避让左侧搜索图标 */
+.gal-search .gal-search-input:focus ~ .gal-search-label,
+.gal-search .gal-search-input:not(:placeholder-shown) ~ .gal-search-label {
+  color: var(--accent-cyan-bright);
+  transform: translateX(34px) translateY(-10px);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0 8px;
+  background: var(--bg-elevated);
+  border-left: 2px solid rgb(var(--cyan-rgb) / 0.3);
+  border-right: 2px solid rgb(var(--cyan-rgb) / 0.3);
+  border-radius: 4px;
+}
+
+/* 亮色主题：上浮标签底色随 --bg-elevated 自动翻转，无需额外覆盖 */

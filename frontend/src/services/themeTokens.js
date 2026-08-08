@@ -46,19 +46,17 @@ export const KIND_FALLBACK = {
 }
 
 // 桥梁类型 → 颜色（原 InspirationDetail.jsx 与 ForceGraph.jsx 重复定义，此处统一）
+// 2026-08：桥梁类型精简为 3 种（意象同构/结构共振/主题对立），移除情感回响/技法迁移
+// 说明：库里历史遗留的 emotion_echo / technique_transfer 桥仍会显示，靠 BRIDGE_FALLBACK 灰兜底。
 export const BRIDGE_COLORS = {
   dark: {
     imagery_isomorphism:  '#f59e0b',  // 意象同构：橙色
     structure_resonance:  '#3b82f6',  // 结构共振：蓝色
-    emotion_echo:         '#ec4899',  // 情感回响：粉色
-    technique_transfer:   '#10b981',  // 技法迁移：绿色
     theme_opposition:     '#ef4444'   // 主题对立：红色
   },
   light: {
     imagery_isomorphism:  '#d97706',
     structure_resonance:  '#2563eb',
-    emotion_echo:         '#db2777',
-    technique_transfer:   '#059669',
     theme_opposition:     '#dc2626'
   }
 }
@@ -172,4 +170,53 @@ export const FOLDER_PRESET_COLORS = {
  */
 export function getFolderPresetColors(theme = currentTheme()) {
   return FOLDER_PRESET_COLORS[theme] || FOLDER_PRESET_COLORS.dark
+}
+
+// ========== 灵感类型色板（UI 精修，v7 定稿） ==========
+// 功能：9 种灵感类型各自的代表色，用于：
+//   - 灵感网络图节点 fill（节点 = 灵感类型色，边 = 桥梁色，两者分离互不影响）
+//   - 侧边栏灵感条目右侧 8px 类型小色点
+// 设计约束（v7 定稿，经用户逐色审查）：
+//   - 整体平淡化：低饱和、高明度，深背景不刺眼
+//   - "产品想法"天蓝与"研究好奇"青蓝拉开；"角色人物"亮黄与"美学提案"浅玫红拉开
+//   - "创作素材"用黄绿（黄多于绿）；"概念"用紫罗兰、"设定世界观"用朱红（用户指定互换）
+//   - 与文件夹预设色（分组维度）部分接近属预期：类型色用于小色点/网络图节点，
+//     文件夹色用于侧边栏分组/微光，尺寸与位置不同，实际混淆风险低
+// 取值策略与 KIND_COLORS / BRIDGE_COLORS 一致：暗色用偏亮、亮色用偏深。
+export const INSPIRATION_TYPE_COLORS = {
+  dark: {
+    '产品想法': '#4e93ec',   // 柔天蓝：理性、构建
+    '氛围画面': '#e5a84e',   // 柔琥珀：感官、氛围
+    '设定世界观': '#dd5b52', // 朱红：想象、设定（用户指定与概念互换）
+    '创作素材': '#aecb60',   // 黄绿偏黄：生长、素材
+    '研究好奇': '#38bdd6',   // 青蓝：探索、追问
+    '角色人物': '#e8cf5a',   // 亮黄：情感、人物
+    '概念': '#a58cf0',       // 紫罗兰：抽象、命名（用户指定与世界观互换）
+    '美学提案': '#e9859f',   // 浅玫红：风格、主张
+    '其他': '#93a1b3'        // 柔灰：兜底
+  },
+  light: {
+    '产品想法': '#3572c9',
+    '氛围画面': '#c78f36',
+    '设定世界观': '#b8453d',
+    '创作素材': '#8ca94b',
+    '研究好奇': '#2a93a8',
+    '角色人物': '#c4ab3e',
+    '概念': '#7f66d6',
+    '美学提案': '#c46884',
+    '其他': '#5f6e84'
+  }
+}
+
+/**
+ * 取当前主题的灵感类型色
+ * 功能：按灵感类型取代表色；未知类型返回 null（调用方自行兜底灰色）
+ * @param {string} [type] - 灵感类型（如 '产品想法'）；inspiration_type 字段
+ * @param {'dark'|'light'} [theme]
+ * @returns {string|null} hex 色值或 null
+ */
+export function getInspirationTypeColor(type, theme = currentTheme()) {
+  if (!type) return null
+  const table = INSPIRATION_TYPE_COLORS[theme] || INSPIRATION_TYPE_COLORS.dark
+  return table[type] || null
 }

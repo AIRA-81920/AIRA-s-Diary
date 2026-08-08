@@ -2,12 +2,16 @@
 // 功能：所有 Agent 的基类，提供 LLM 调用、灵感查询、结果保存等通用方法
 // 实现方式：ES6 class，子类继承并实现 run() 方法
 
-import { getOpenAIClient, withRetry, AGENT_TYPES } from '../services/openai.js';
+import { getOpenAIClient, withRetry, withTimeout, AGENT_TYPES } from '../services/openai.js';
 import { getTemperature } from '../config/modelConfig.js';
 import Inspiration from '../models/Inspiration.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
+
+// LLM 单次调用超时（毫秒）：120s。deepseek 端点高峰可到 60-90s，120s 是宽松上限；
+// 超过则抛错由上层 catch 转成可见错误，避免请求无限挂起（fix：原无超时控制）
+const LLM_TIMEOUT_MS = 120000;
 
 class BaseAgent {
   // 构造器：设置 Agent 名称、描述、类型与系统提示词
@@ -22,6 +26,7 @@ class BaseAgent {
   // 调用 LLM 生成内容
   // 功能：发送 prompt 到 OpenAI，返回完整响应对象
   // 实现方式：使用 getOpenAIClient 获取客户端，withRetry 包裹调用以支持限流重试
+  // fix：增加超时控制（LLM 端点慢时避免请求无限挂起，前端卡在加载态）
   async generate(prompt, systemPrompt = null) {
     const { client, model } = getOpenAIClient(this.type);
     // 无 API key 时抛错，由调用方 try/catch 处理
@@ -32,7 +37,11 @@ class BaseAgent {
     messages.push({ role: 'user', content: prompt });
     const temperature = getTemperature(this.type);
     // withRetry 自动处理 429 限流与瞬时错误
-    return withRetry(() => client.chat.completions.create({ model, messages, temperature }));
+    // 外层 withTimeout：单次调用超过 LLM_TIMEOUT_MS 则抛错，由上层 catch 转为可见错误
+    return withTimeout(
+      withRetry(() => client.chat.completions.create({ model, messages, temperature })),
+      LLM_TIMEOUT_MS
+    );
   }
 
   // 获取灵感对象

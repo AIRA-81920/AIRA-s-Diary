@@ -38,39 +38,50 @@ import {
 } from '../config/constants.js';
 
 // 桥梁类型中文标签（用于 prompt 内说明，不入库）
+// 2026-08 精简为 3 种：意象同构 / 结构共振 / 主题对立
 const BRIDGE_TYPE_LABELS = {
-  imagery_isomorphism: '意象同构（不同主题但画面感相似）',
-  structure_resonance: '结构共振（内在结构/逻辑相似）',
-  emotion_echo: '情感回响（唤起相似情绪）',
-  technique_transfer: '技法迁移（可借用方法）',
-  theme_opposition: '主题对立（互为镜像/反面）'
+  imagery_isomorphism: '意象同构（一方具体的意象、画面能被另一方具体承接或回应）',
+  structure_resonance: '结构共振（双方内在的组织/结构/逻辑存在可指认的相似）',
+  theme_opposition: '主题对立（双方在同一个具体命题上形成对立或张力）'
 };
 
 class CoalesceAgent extends BaseAgent {
   constructor() {
     super('CoalesceAgent', '跨灵感桥梁 → 新灵感种子');
     this.type = AGENT_TYPES.COALESCE;
-    this.systemPrompt = `你是 AIRA 系统的跨界连接师，擅长在看似无关的灵感之间发现深层联系。
+    this.systemPrompt = `你是 AIRA 系统的跨界连接师，负责判断两个灵感之间是否存在"真连接"。
 
-## 核心原则
-1. **找到真连接**：不是"都是创意"这种废话，是具体的、可操作的连接
-2. **桥梁类型准确**：5 种类型必须选最贴切的那一种
-3. **理由具体**：reason 必须说明"哪个意象/结构/情感/技法/主题"对应"哪个"
-4. **基于指纹**：连接应基于双方的语义指纹（已浓缩了原文+crystal+chunks 的语义）
+## 最高原则：宁可拒绝，不可强连
+你没有义务为每一对灵感都建立桥梁。**如果你的深思熟虑后认为两者之间没有实质联系，就必须明确拒绝**。
+强行凑出的连接不但无用，还会污染整个灵感网络。判断标准是"我真的理解了这两个东西，并确认存在可验证的联系"，而不是"我能不能硬说出一个共性"。
 
-## 5 种桥梁类型
-- imagery_isomorphism（意象同构）：两个灵感中的意象在视觉/听觉层面有同构关系
-- structure_resonance（结构共振）：两个灵感的内在结构（节奏/层次/形态）有共振
-- emotion_echo（情感回响）：两个灵感唤起相似或互补的情感
-- technique_transfer（技法迁移）：一个灵感的技法可迁移到另一个
-- theme_opposition（主题对立）：两个灵感在主题上形成对立张力
+## 如何判断"真连接"：必须可点对点验证
+连接必须能落到双方**具体的、可指认的元素**上，并说明"谁"对应"谁"。禁止使用"都体现XX精神""都有XX的意味""本质上是同一种XX"这类**不可证伪的抽象套话**。
+
+判断时先自问三个问题：
+1. 我是否能从灵感 A 里找到一个**具体的**元素（一个意象、一段结构、一个主张）？
+2. A 的这个具体元素，是否能在灵感 B 里找到**一个具体的**对应物（承接、结构相似、或对立）？
+3. 这个对应是否**换了媒介/换了语境仍然成立**，而不是只因为标题或表面关键词像？
+
+只要以上任一无法指向具体证据，就说明连接不扎实，此时应**拒绝**而非硬连。
+
+## 允许的连接类型（仅 3 种）
+- imagery_isomorphism（意象同构）：一方某**具体意象/画面**，能被另一方**具体**承接或回应。必须指出 A 的"哪个意象"对应 B 的"哪个意象"，禁止停留在"都有氛围感"。
+- structure_resonance（结构共振）：双方**内在的组织方式、推进节奏、逻辑骨架**有可指认的相似。必须说明"结构上是如何对应"的，禁止只停留在"都很复杂/都是层层递进"这种模糊表述。
+- theme_opposition（主题对立）：双方在**同一个具体命题**上站在对立面。必须点明"这个共同命题是什么、双方各自持什么立场"，否则不构成对立。
+
+若两者的关系不属于以上任何一类——最常见情况——**应当拒绝建立桥梁**。
 
 ## 输出格式
 严格的 JSON 对象，字段：
-- bridgeType：上述 5 种之一（英文 key）
-- reason：100-200 字的具体连接说明
-- llmScore：0-1 的信心分（0.7 以上表示确信存在连接）
-
+- bridgeType：上述 3 种之一（英文 key）；若判定无实质连接，则返回 "no_link"
+- reason：50-150 字的具体连接说明（must：指出 A 的哪个具体元素与 B 的哪个具体元素如何对应；拒绝时简述为什么判定无关）
+- llmScore：0-1 的实数值，表示"你对这个判断的把握"。
+  - 0.85+：你非常确信存在**扎实的、可验证的**连接
+  - 0.60-0.85：连接存在，但可能只涉及局部或程度有限
+  - 0.40-0.60：临界——连接存疑，你偏向存在但站不住；此时若无法自圆其说，应返回 no_link
+  - <0.40：你倾向认为**不存在实质连接**，应返回 no_link
+  
 仅输出 JSON，无任何额外文字、markdown 标记或代码块包裹。`;
   }
 
@@ -107,7 +118,8 @@ class CoalesceAgent extends BaseAgent {
     }
 
     // 字段校验
-    if (!BRIDGE_TYPE_VALUES.includes(result.bridgeType)) {
+    // bridgeType 合法值：BRIDGE_TYPE_VALUES（3 类真连接）+ 拒绝值 'no_link'（2026-08 新增拒绝权）
+    if (result.bridgeType !== 'no_link' && !BRIDGE_TYPE_VALUES.includes(result.bridgeType)) {
       const err = new Error(`Invalid bridgeType: ${result.bridgeType}`);
       err.code = 'LLM_OUTPUT_INVALID';
       throw err;
@@ -124,7 +136,7 @@ class CoalesceAgent extends BaseAgent {
     }
 
     return {
-      bridgeType: result.bridgeType,
+      bridgeType: result.bridgeType,          // 可能为 'no_link'（表示拒绝）
       reason: result.reason.trim(),
       llmScore: result.llmScore
     };
@@ -140,7 +152,7 @@ class CoalesceAgent extends BaseAgent {
    * @returns {string} 完整 prompt
    */
   _buildDeepenPrompt(sideA, sideB) {
-    return `请基于以下两个灵感的语义指纹与原文摘要，深挖它们之间的跨界连接。
+    return `请基于以下两个灵感的语义指纹与原文摘要，判断它们之间是否存在"真连接"。
 
 ## 灵感 A
 - 标题：${sideA.title || '无'}
@@ -153,22 +165,37 @@ class CoalesceAgent extends BaseAgent {
 - 原文摘要：${sideB.contentExcerpt || '无'}
 
 ## 任务
-判断这两个灵感之间最贴切的桥梁类型，并给出具体连接说明与信心分。
+1. 先**独立理解**这两个灵感各自在说什么、核心主张/形态是什么。
+2. 再判断：A 里能否找到一个**具体元素**，能在 B 里找到**具体的对应物**（承接 / 结构相似 / 对立）。
+3. 只有当你找到**可点对点验证**的真连接时才建立桥梁；否则**返回 no_link 拒绝**。你没有义务为每一对建立联系。
 
-## 桥梁类型说明
+## 允许的桥梁类型（仅 3 种）
 ${Object.entries(BRIDGE_TYPE_LABELS).map(([k, v]) => `- ${k}：${v}`).join('\n')}
+
+## 反例（强烈禁止的"假连接"）
+以下都是**不可证伪的抽象套话**，属于强连，直接判定为 no_link：
+- "都体现了'从混乱到有序'的过程"
+- "两者都带有'漂浮到锚定'的意味"
+- "本质上是关于XX的深层探讨"
+- "都让人联想到推进感/积淀感"
+这些属于任何两个东西都能套上的万能句式，不构成真实连接。
+
+## 更接近"真连接"的正确示例
+- 意象同构：A 里的"杯沿缺口、反复摩挲"这一焦虑小动作，恰好能承接 B 里"本地资料边界的反复校验"——两者都通过一个**可触摸的收缩动作**应对不确定。必须落在具体意象上。
+- 结构共振：A 的"先展开细节铺陈 → 再点出真相"的叙事推进，与 B 的"先碎片 → 后结晶"的认知推进，存在**可指认的步骤对应**。
+- 主题对立：A 主张"技术应完全本地化、拒绝联网"，B 主张"只有联网才能突破边界"，在**同一个命题上**形成对峙。
 
 ## 输出 JSON 格式（严格遵守）
 {
-  "bridgeType": "imagery_isomorphism",
-  "reason": "100-200 字的具体连接说明，指出 A 的 X 与 B 的 Y 形成 Z 关系...",
+  "bridgeType": "structure_resonance",
+  "reason": "50-150 字的连接说明：指出 A 的哪个具体元素与 B 的哪个具体元素如何对应；若拒绝则简述判定无关的原因",
   "llmScore": 0.85
 }
 
 ## 关键约束
-1. bridgeType 必须是上述 5 种之一（英文 key 原样）
-2. reason 必须具体指出"哪个元素"对应"哪个元素"，禁止"两者都很有趣"这种废话
-3. llmScore 反映你对连接的信心：0.9+ 极强连接，0.7-0.9 较强，0.5-0.7 中等，<0.5 弱
+1. bridgeType 只能是 imagery_isomorphism / structure_resonance / theme_opposition 三者之一；**判定无实质连接时返回 "no_link"**
+2. reason 必须具体到"哪个元素↔哪个元素"，禁止任何抽象套话
+3. llmScore 表示你判断的把握，**不是"连接写得顺不顺"**；把握不足、无法自圆其说时应返回 no_link 并给低分
 4. 仅输出 JSON，无任何前后缀文字`;
   }
 

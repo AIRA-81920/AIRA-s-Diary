@@ -214,7 +214,7 @@ function PRDField({ icon, label, value, multiline, onSave }) {
         )
       ) : (
         <p
-          className="text-xs text-ink/70 cursor-pointer hover:text-ink/95 transition-colors leading-relaxed font-sans"
+          className="glow-card glow-text text-xs text-ink/70 cursor-pointer hover:text-ink/95 transition-colors leading-relaxed font-sans rounded-md"
           onClick={startEdit}
           style={{ minHeight: '20px' }}
         >
@@ -379,7 +379,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => startCrystallize(inspiration)}
             disabled={loading || senseLoading || !inspiration}
-            className="btn-accent flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium animate-fade-in-up font-sans"
+            className="glow-btn btn-accent flex items-center gap-2 px-5 py-2.5 rounded-xl text-white text-sm font-medium animate-fade-in-up font-sans"
             style={{ animationDelay: '180ms' }}
           >
             {loading || senseLoading ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -504,7 +504,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
                 key={t}
                 type="button"
                 onClick={() => confirmInspirationType(t)}
-                className="px-3 py-2.5 rounded-lg text-xs border transition-all text-left font-sans flex items-center justify-between"
+                className="glow-btn px-3 py-2.5 rounded-lg text-xs border transition-all text-left font-sans flex items-center justify-between"
                 style={{
                   borderColor: t === selectedType ? 'rgba(168,85,247,0.6)' : 'rgb(var(--ink) / 0.08)',
                   background: t === selectedType ? 'rgba(168,85,247,0.12)' : 'transparent',
@@ -531,7 +531,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => confirmInspirationType(selectedType || '其他')}
             disabled={loading}
-            className="btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+            className="glow-btn btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             <span>用这个类型继续</span>
@@ -631,14 +631,14 @@ function CrystallizePanel({ inspiration, onCollapse }) {
           <button
             type="button"
             onClick={() => confirmCapsuleUsage('ignore', inspiration)}
-            className="glass-card flex-1 py-2.5 rounded-xl text-ink/50 hover:text-ink/80 text-xs transition-colors font-sans"
+            className="glow-btn glass-card flex-1 py-2.5 rounded-xl text-ink/50 hover:text-ink/80 text-xs transition-colors font-sans"
           >
             忽略，按原流程
           </button>
           <button
             type="button"
             onClick={() => confirmCapsuleUsage('use', inspiration)}
-            className="btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+            className="glow-btn btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
           >
             <Check size={12} />
             <span>使用胶囊</span>
@@ -663,7 +663,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             <button
               type="button"
               onClick={() => startCrystallize(inspiration)}
-              className="glass-card px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs font-sans"
+              className="glow-btn glass-card px-3 py-1.5 rounded-lg text-ink/60 hover:text-ink/90 text-xs font-sans"
             >
               重试
             </button>
@@ -756,7 +756,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
                           type="button"
                           onClick={() => handleOptionClick(opt.id)}
                           disabled={disabled}
-                          className={`px-3 py-2 rounded-lg text-xs border transition-all text-left font-sans flex items-center gap-1.5 ${
+                          className={`glow-btn px-3 py-2 rounded-lg text-xs border transition-all text-left font-sans flex items-center gap-1.5 ${
                             opt.isOther ? 'col-span-2' : ''
                           } ${disabled ? 'opacity-30 cursor-not-allowed' : ''}`}
                           style={{
@@ -826,7 +826,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => skipToPRD(inspiration)}
             disabled={loading}
-            className="glass-card flex-1 py-2.5 rounded-xl text-ink/50 hover:text-ink/80 text-xs transition-colors disabled:opacity-40 font-sans"
+            className="glow-btn glass-card flex-1 py-2.5 rounded-xl text-ink/50 hover:text-ink/80 text-xs transition-colors disabled:opacity-40 font-sans"
           >
             跳过，直接生成PRD
           </button>
@@ -834,7 +834,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => answerCrystallizeQuestion(inspiration)}
             disabled={!canSubmitAnswer && currentQ.key !== '_supplement'}
-            className="btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+            className="glow-btn btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
           >
             {loading ? (
               <Loader2 size={12} className="animate-spin" />
@@ -922,7 +922,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => skipToPRD(inspiration)}
             disabled={loading}
-            className="glass-card flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors disabled:opacity-40 font-sans"
+            className="glow-btn glass-card flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors disabled:opacity-40 font-sans"
             title="重新调用 LLM 生成 PRD"
           >
             <RotateCcw size={12} />
@@ -932,7 +932,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => confirmPRD(inspiration.id)}
             disabled={loading}
-            className="btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+            className="glow-btn btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
             <span>确认，进入下一步</span>
@@ -980,7 +980,8 @@ function CrystallizePanel({ inspiration, onCollapse }) {
                   type="button"
                   onClick={() => handleDispatch(option)}
                   disabled={dispatching}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 disabled:cursor-not-allowed text-left animate-fade-in-up glass-card font-sans"
+                  className="glow-btn w-full flex items-center gap-3 px-3 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 disabled:cursor-not-allowed text-left animate-fade-in-up glass-card font-sans"
+                  data-glow={option.id === 'epitaxy' ? 'purple' : undefined}
                   style={{
                     borderColor: `${option.color}30`,
                     background: `${option.color}08`,
@@ -1023,7 +1024,7 @@ function CrystallizePanel({ inspiration, onCollapse }) {
           <button
             type="button"
             onClick={() => resetCrystallize()}
-            className="glass-card flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors font-sans"
+            className="glow-btn glass-card flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors font-sans"
           >
             <RotateCcw size={12} />
             <span>重新开始</span>

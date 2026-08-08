@@ -20,6 +20,9 @@ import settingsRoutes from './routes/settings.js';
 import folderRoutes from './routes/folderRoutes.js';
 import { printModelConfig } from './config/modelConfig.js';
 import { EmbeddingService } from './services/embeddingService.js';
+import { CoalesceReaperService } from './services/coalesceReaperService.js';
+// v12 快照机制：过期快照清理服务（软删除记录到期后物理清理）
+import { startSnapshotCleanup, stopSnapshotCleanup } from './services/snapshotCleanupService.js';
 
 // 确保数据目录存在（数据库文件与 per-inspiration 文件夹均存放于此）
 // 实现：基于 DATA_DIR 创建 data/ 与 data/inspirations/ 目录（recursive 保证幂等）
@@ -79,6 +82,12 @@ initDb()
       console.log(`[Server] Running on http://localhost:${PORT}`);
       // 打印当前生效的模型配置（便于确认 .env 中的自定义是否生效）
       printModelConfig();
+      // 启动 Coalesce Reaper 对账扫描器（5 天周期，架构 §6.5 R4）
+      // 功能：后台周期性扫描全库灵感配对，为尚未生成 candidate 的配对补算
+      CoalesceReaperService.start();
+      // v12 快照机制：启动过期快照清理器（30s 后首跑，之后每 24h）
+      // 功能：物理清理 deleted_until 已过期的软删除记录（数据库 + 灵感目录）
+      startSnapshotCleanup();
     });
   })
   .catch((err) => {
@@ -86,3 +95,17 @@ initDb()
     console.error('[Server] Failed to start: database initialization error:', err);
     process.exit(1);
   });
+
+// 注册 SIGINT/SIGTERM 处理器，优雅停止 CoalesceReaperService 的定时器
+// 功能：进程收到终止信号时清理 reaper 的 setTimeout/setInterval，避免句柄泄漏
+// v12：同时停止快照清理器的定时器
+process.on('SIGINT', () => {
+  CoalesceReaperService.stop();
+  stopSnapshotCleanup();
+  process.exit(0);
+});
+process.on('SIGTERM', () => {
+  CoalesceReaperService.stop();
+  stopSnapshotCleanup();
+  process.exit(0);
+});

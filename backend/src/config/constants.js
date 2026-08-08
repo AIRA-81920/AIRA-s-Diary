@@ -28,20 +28,29 @@ export const THRESHOLDS = {
 };
 
 // =========================================================================
+// Coalesce Reaper 对账扫描周期（架构 §6.5 R4 对账扫描补算）
+// =========================================================================
+// 功能：后台 reaper 每 N 天扫一次全库，为尚未生成 candidate 的灵感配对补算
+// 实现方式：CoalesceReaperService.start() 读取 app_meta.coalesce_last_reap_at
+//           距上次扫描 >= 此天数则触发 reapOnce；之后按此周期 setInterval
+export const REAPER_INTERVAL_DAYS = 5;
+
+// =========================================================================
 // Bridge Type 枚举（架构文档 §4.2.2 与 §10.1）
 // =========================================================================
-// 5 种桥梁类型，英文 key 入库，中文 label 由前端映射
-// 注意：需求书 key 为准，旧 key（structural_resonance/emotional_echo/thematic_opposition）
-//       在 v3 迁移中映射为新 key（structure_resonance/emotion_echo/theme_opposition）
+// 桥梁类型精简为 3 种（2026-08 决定）：
+//   原 5 种中砍掉 emotion_echo（情感回响，主观、最易"牵强附会"）
+//   与 technique_transfer（技法迁移，跨域难有可验证的技法对应）
+//   保留的 3 种都是"可点对点验证"的具象连接，配合"可验证连接证据"提示词约束
+// 说明：历史库里已存在的 emotion_echo / technique_transfer 桥仍保留展示（前端有兜底色 + fallback），
+//       但新扫描不再生成这两种类型。
 export const BRIDGE_TYPES = {
-  IMAGERY_ISOMORPHISM: 'imagery_isomorphism', // 意象同构：不同主题但画面感相似
-  STRUCTURE_RESONANCE: 'structure_resonance', // 结构共振：内在结构/逻辑相似
-  EMOTION_ECHO: 'emotion_echo',               // 情感回响：唤起相似情绪
-  TECHNIQUE_TRANSFER: 'technique_transfer',   // 技法迁移：可借用方法
-  THEME_OPPOSITION: 'theme_opposition'        // 主题对立：互为镜像/反面
+  IMAGERY_ISOMORPHISM: 'imagery_isomorphism', // 意象同构：一方具体意象可被另一方具体承接/回应
+  STRUCTURE_RESONANCE: 'structure_resonance', // 结构共振：双方内在结构/组织方式有可指认的相似
+  THEME_OPPOSITION: 'theme_opposition'        // 主题对立：双方在同一个具体命题上形成对立/张力
 };
 
-// 旧 key → 新 key 映射表（供 v3 迁移使用）
+// 旧 key → 新 key 映射表（供 v3 迁移使用；保留历史 key 映射，不因砍类型而删）
 // 功能：把现状库中的旧 bridge_type 值映射为需求书统一 key
 // 实现方式：在 migrateV3 中遍历 bridges 表，逐行映射
 export const BRIDGE_TYPE_KEY_MAP = {
@@ -201,6 +210,25 @@ export const EMBEDDING_DIMENSION = 384;
 export const EMBEDDING_BATCH_SIZE = 32;
 
 // =========================================================================
+// Embedding 多源加权权重（2026-08 决定：标题 + 正文 + 指纹 三源加权合成总分）
+// =========================================================================
+// 功能：召回相似度不再只依赖指纹单源，而是标题/正文/指纹各自算向量、
+//       各自算余弦相似度，再按权重合成 vectorScore。
+// 说明：
+//   - 系统没有独立「摘要」，加权源固定为 title / content / fingerprint 三个
+//   - 权重合计必须等于 1；某源缺失时由合成方按比例分摊到其余存在源
+//   - 权重可调，改这里即可，不需要动业务代码
+// 2026-08 调优：指纹 0.5（提高真相似辨识度）/ 正文 0.4 / 标题 0.1
+//   原因：三对实测(研思体×AIRA、网络美学×砼核、ROM×梦游体)指纹分高达 0.67-0.71，
+//         但原权重(标题0.2/正文0.4/指纹0.4)被标题/正文低分稀释，加权总分跌破 0.55 建桥门槛。
+//         提高指纹权重让"真相似"更易达到门槛，同时标题权重下调，避免标题噪音干扰。
+export const EMBEDDING_WEIGHTS = {
+  TITLE: 0.1,        // 标题相似度权重
+  CONTENT: 0.4,      // 正文相似度权重
+  FINGERPRINT: 0.5   // 指纹相似度权重（真相似主要锚点）
+};
+
+// =========================================================================
 // 语义指纹约束（架构文档 §10.1 与 §11）
 // =========================================================================
 export const FINGERPRINT_MIN_LENGTH = 150;
@@ -232,6 +260,18 @@ export const LLM_LIMITS = {
 export const FORCE_GRAPH_LIMITS = {
   MAX_NODES: 500,              // 节点数上限，超出按 bridgeCount 降序截断
   ITERATIONS: 300              // d3-force 迭代次数上限
+};
+
+// =========================================================================
+// 桥梁"双达标"门槛（2026-08 决定：embedding 与 LLM 分数都需达标才建桥）
+// =========================================================================
+// 功能：一条候选对要成为正式桥梁，需同时满足——
+//   1. vectorScore >= VECTOR_MIN（embedding 侧门槛，向量相似度）
+//   2. llmScore  >= LLM_MIN 且不为 no_link（LLM 侧门槛，需 LLM 确认存在真连接）
+// 说明：原先 LLM 返回后无论信心多低都建桥（llmScore 仅展示不决策），现改为参与建桥决策。
+export const COALESCE_QUALIFY = {
+  VECTOR_MIN: THRESHOLDS.LLM,   // 向量门槛：沿用 LLM 触发线 0.55（待你给定后可调）
+  LLM_MIN: 0.6                  // LLM 门槛：llmScore >= 0.6 才视为"确认存在连接"（约等于"较强"档）
 };
 
 // =========================================================================
@@ -1230,6 +1270,7 @@ export const CONSTANTS = {
   MULTILINGUAL_EMBEDDING_MODEL,
   EMBEDDING_DIMENSION,
   EMBEDDING_BATCH_SIZE,
+  EMBEDDING_WEIGHTS,
   FINGERPRINT_MIN_LENGTH,
   FINGERPRINT_MAX_LENGTH,
   FINGERPRINT_INPUT_LIMITS,

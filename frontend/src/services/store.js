@@ -231,6 +231,8 @@ const useStore = create((set, get) => ({
         }))
         // K3-g：走统一切换路径，确保所有阶段状态被 reset（防继承上个灵感数据）
         get().setSelectedInspiration(created)
+        // 创建后刷新文件夹计数（新灵感若带 folder_id 会影响所属文件夹数量）
+        get().loadFolders()
         return created
       }
     } catch (err) {
@@ -306,6 +308,8 @@ const useStore = create((set, get) => ({
         }))
         // K3-e：清理被删除灵感的抽屉快照（避免脏数据残留）
         get().clearDrawerCache(id)
+        // v12：软删除后刷新文件夹计数（该灵感已离开所属文件夹的活跃数量）
+        get().loadFolders()
         // K3-g：若删除的是当前选中灵感，重置所有阶段状态（防止新建灵感继承）
         if (wasSelected) {
           get().resetCrystallize()
@@ -528,8 +532,10 @@ const useStore = create((set, get) => ({
   forceGraphData: null,                    // { nodes: [], edges: [] } 或 null
   forceGraphLoading: false,
   forceGraphError: null,
+  forceGraphScanning: false,               // 全量扫描桥梁中（网络图左下角按钮触发）
   forceGraphViewport: null,                // { x, y, k } d3-zoom 状态，null 表示默认
   FORCE_GRAPH_NODE_LIMIT: 500,             // 节点上限（R5）
+  pendingBridgeCount: 0,                   // 待查看的新桥梁数量（网络图徽标用，打开图时清零）
 
   /**
    * 打开 ForceGraph 覆盖层
@@ -538,9 +544,15 @@ const useStore = create((set, get) => ({
    *   1. 调用 api.getCoalesceGraph() 获取全量节点+边
    *   2. 节点超出上限截断（保留 bridgeCount 最高的）
    *   3. 设置 forceGraphOpen = true，恢复 viewport（如有）
+   *   4. 打开时立即清零 pendingBridgeCount（UI 即时反馈），并 fire-and-forget
+   *      调用 markCoalesceNetworkSeen 通知后端更新 lastSeenAt（不阻塞图加载）
    */
   openForceGraph: async () => {
-    set({ forceGraphOpen: true, forceGraphLoading: true, forceGraphError: null })
+    // 立即清零徽标计数，让入口图标即时去掉红点；同时发起 mark-seen（不 await，不阻塞）
+    set({ forceGraphOpen: true, forceGraphLoading: true, forceGraphError: null, pendingBridgeCount: 0 })
+    api.markCoalesceNetworkSeen().catch(() => {
+      // 静默失败：后端 lastSeenAt 未更新不影响图展示，下次轮询会重新计数
+    })
     try {
       const result = await api.getCoalesceGraph()
       if (result.success === false) {
@@ -588,6 +600,55 @@ const useStore = create((set, get) => ({
    */
   closeForceGraph: () => {
     set({ forceGraphOpen: false })
+  },
+
+  /**
+   * 全量扫描桥梁（灵感网络左下角按钮触发）
+   * 功能：调用 POST /coalesce/scan-all，全库两两召回 + LLM 深挖，
+   *       扫描完成后重新加载 graph（新发现的 pending 桥以虚线出现）+ 刷新待办徽标
+   * 实现方式：
+   *   1. set forceGraphScanning = true（按钮转圈 + 禁用）
+   *   2. 调用 api.scanAllCoalesce()
+   *   3. 成功后重新 openForceGraph()（保留 viewport，重载节点/边）
+   *   4. 刷新 pendingBridgeCount 徽标 + mark-seen
+   */
+  scanAllBridges: async () => {
+    set({ forceGraphScanning: true, forceGraphError: null })
+    try {
+      const result = await api.scanAllCoalesce()
+      if (result.success === false) {
+        set({ forceGraphError: result.error || '扫描失败', forceGraphScanning: false })
+        return
+      }
+      // 扫描成功后重新加载图数据（新桥梁以虚线出现）
+      await get().openForceGraph()
+      // 刷新待办徽标（新 pending 桥会计入红点；同时 mark-seen 已由 openForceGraph 处理）
+      get().loadPendingBridgeCount()
+      set({ forceGraphScanning: false })
+    } catch (err) {
+      set({ forceGraphError: err.message, forceGraphScanning: false })
+    }
+  },
+
+  /**
+   * 加载待查看的桥梁数量（网络图徽标轮询用）
+   * 功能：调用 GET /coalesce/pending-count，更新 pendingBridgeCount 用于徽标显示
+   * 实现方式：
+   *   1. 调用 api.getCoalescePendingCount()
+   *   2. 成功后只更新 pendingBridgeCount（lastSeenAt 由后端管理，前端不存）
+   *   3. 失败时静默处理（console.warn），不设全局 error——因为这是 60s 轮询接口，
+   *      报错弹窗会骚扰用户；网络恢复后下一次轮询会自动修正
+   */
+  loadPendingBridgeCount: async () => {
+    try {
+      const result = await api.getCoalescePendingCount()
+      if (result.success !== false) {
+        set({ pendingBridgeCount: result.data?.count ?? 0 })
+      }
+    } catch (err) {
+      // 静默失败：轮询接口不阻塞 UI，不污染全局 error
+      console.warn('loadPendingBridgeCount error:', err.message)
+    }
   },
 
   /**
@@ -1610,7 +1671,8 @@ const useStore = create((set, get) => ({
 
   /**
    * 确认灵感类型（sense_confirm 阶段，用户确认或修正后）
-   * 功能：用户在 sense_confirm 阶段确认类型后，进入 questioning
+   * 功能：用户在 sense_confirm 阶段确认类型后，进入 questioning 并立即触发追问
+   * fix：原来只切换 stage 不触发 _runInitialQuestioning，导致 questions 为空卡在"等待追问"
    * @param {string} type - 用户确认的类型（可能修正过）
    */
   confirmInspirationType: (type) => {
@@ -1628,6 +1690,11 @@ const useStore = create((set, get) => ({
       crystalType: typeToCrystal[type] || 'free_note',
       crystallizeStage: 'questioning'
     })
+    // fix：确认类型后立即用该类型触发 initial 追问（与 changeInspirationType 行为一致）
+    const inspiration = get().selectedInspiration
+    if (inspiration) {
+      get()._runInitialQuestioning(inspiration, type)
+    }
   },
 
   /**
@@ -1891,11 +1958,16 @@ const useStore = create((set, get) => ({
   /**
    * 加载追加条目列表
    * 功能：GET /inspirations/:id/addenda，缓存到 addenda
+   * 实现方式：
+   *   - 默认（silent=false）：置 addendaLoading 触发加载态，供初次打开/手动刷新使用
+   *   - silent=true（后端异步识图轮询等后台场景）：不切换 addendaLoading，
+   *     只静默更新 data，避免"列表闪没再恢复"造成的画面抽搐
    * @param {string} inspirationId - 灵感 ID
+   * @param {boolean} [silent] - 是否静默刷新（不显示加载态）
    */
-  loadAddenda: async (inspirationId) => {
+  loadAddenda: async (inspirationId, silent = false) => {
     if (!inspirationId) return
-    set({ addendaLoading: true, addendaError: null })
+    if (!silent) set({ addendaLoading: true, addendaError: null })
     try {
       const result = await api.listAddenda(inspirationId)
       if (result.success === false) {

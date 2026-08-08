@@ -1,6 +1,5 @@
 {
   "name": "airas-diary",
-  "version": "0.7.0",
   "description": "AIRA's Diary — AI 驱动的灵感管理与深度思考工作流系统",
   "private": true,
   "workspaces": [

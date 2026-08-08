@@ -9,6 +9,9 @@
 //   - Detail 始终渲染，抽屉与 Detail 并列（挤压式，不替换 Detail）
 import React, { useCallback } from 'react'
 import useStore from '../services/store.js'
+// UI 精修：灵感确认类型后，其下所有发光组件统一用类型色
+import { getInspirationTypeColor } from '../services/themeTokens.js'
+import { hexToRgb } from '../services/glowSystem.js'
 import Header from './Header.jsx'
 import Sidebar from './Sidebar.jsx'
 import InspirationDetail from './InspirationDetail.jsx'
@@ -96,6 +99,14 @@ function Workspace() {
   const currentSidebarMax = sidebarCompressed ? sidebarCompressedWidthMax : sidebarWidthMax
   const currentSidebarResize = sidebarCompressed ? setSidebarCompressedWidth : setSidebarWidth
 
+  // UI 精修：灵感类型主题化——选中灵感已确认类型时，把类型色注入容器
+  // --insp-glow（RGB 三元组），其下所有 .insp-themed 内的发光组件统一用该色
+  // 未确认类型（inspiration_type 为空）时保持默认青色
+  const inspTypeColor = selectedInspiration?.inspiration_type
+    ? getInspirationTypeColor(selectedInspiration.inspiration_type)
+    : null
+  const inspGlowRgb = inspTypeColor ? hexToRgb(inspTypeColor) : undefined
+
   return (
     // 整体布局：纵向 flex 撑满屏幕高度
     <div className="flex flex-col h-screen">
@@ -103,8 +114,10 @@ function Workspace() {
       <Header onNewInspiration={() => openModal(null)} />
 
       {/* 下方区域：横向 flex，Sidebar + Detail + (可选)WorkbenchDrawer
-          fix5-3：统一 ResizablePanel，挤压态↔展开态切换有 width transition 动画 */}
-      <div className="flex flex-1 overflow-hidden relative">
+          fix5-3：统一 ResizablePanel，挤压态↔展开态切换有 width transition 动画
+          UI 精修：--insp-glow 注入类型色供子级继承；insp-themed 类只加在
+          Detail/抽屉上，避免覆盖 Sidebar（全局导航，文件夹条目保持文件夹色） */}
+      <div className="flex flex-1 overflow-hidden relative" style={{ '--insp-glow': inspGlowRgb }}>
         {/* fix5-3：始终用同一个 ResizablePanel，不再条件渲染切换
             挤压态和展开态都能拖拽调整宽度，切换时有平滑动画 */}
         <ResizablePanel

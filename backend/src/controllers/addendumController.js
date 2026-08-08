@@ -163,8 +163,14 @@ export async function createAddendum(req, res) {
   try {
     const { id } = req.params;
     const { content, links, images, files } = req.body;
-    if (!content) {
-      return res.status(400).json({ success: false, error: 'content is required' });
+    // 内容校验：content / links / images / files 任一非空即可（v11 支持仅存图/仅附件的追加条目）
+    // 实现方式：全部为空才 400，避免"只存图不填正文"被误拒
+    const hasAnyField = !!((content || '').trim()) ||
+      (Array.isArray(links) && links.length > 0) ||
+      (Array.isArray(images) && images.length > 0) ||
+      (Array.isArray(files) && files.length > 0);
+    if (!hasAnyField) {
+      return res.status(400).json({ success: false, error: '内容、链接、图片、文件至少填一项' });
     }
     // 单类型校验：images 与 files 同时非空 → 400（同一追加条目只允许一种附件类型）
     if (Array.isArray(images) && images.length > 0 && Array.isArray(files) && files.length > 0) {

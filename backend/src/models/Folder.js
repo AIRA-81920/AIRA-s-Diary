@@ -57,7 +57,7 @@ export const Folder = {
     return queryAll(`
       SELECT f.*, COUNT(i.id) as inspiration_count
       FROM folders f
-      LEFT JOIN inspirations i ON i.folder_id = f.id
+      LEFT JOIN inspirations i ON i.folder_id = f.id AND i.deleted_at IS NULL
       GROUP BY f.id
       ORDER BY f.sort_order ASC
     `);
@@ -122,7 +122,7 @@ export const Folder = {
    * @returns {number}
    */
   getInspirationCount(id) {
-    const row = queryOne('SELECT COUNT(*) as count FROM inspirations WHERE folder_id = ?', [id]);
+    const row = queryOne('SELECT COUNT(*) as count FROM inspirations WHERE folder_id = ? AND deleted_at IS NULL', [id]);
     return row ? row.count : 0;
   },
 

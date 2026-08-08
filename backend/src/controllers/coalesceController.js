@@ -76,6 +76,22 @@ export async function scan(req, res) {
 }
 
 /**
+ * 全量扫描（灵感网络左下角"扫描桥梁"按钮触发）
+ * 功能：遍历全部灵感两两召回 + LLM 深挖，补齐所有缺失桥梁
+ * 端点：POST /api/coalesce/scan-all
+ * @param {object} req - Express request
+ * @param {object} res - Express response
+ */
+export async function scanAll(req, res) {
+  try {
+    const result = await CoalesceScanService.scanAll();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+/**
  * 获取力导向图数据
  * 功能：返回 nodes + edges，dismissed 桥梁不下发
  * 端点：GET /api/coalesce/graph
@@ -187,6 +203,40 @@ export async function getBridges(req, res) {
     while (stmt.step()) rows.push(stmt.getAsObject());
     stmt.free();
     res.json({ success: true, data: rows });
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+// ========== 网络图待办徽章端点（pending-count / mark-seen）==========
+
+/**
+ * 获取 pending 桥梁数量与上次查看时间
+ * 功能：返回 pending 状态桥梁数量（供前端显示未策展待办徽章）+ 上次查看网络图时间戳
+ * 端点：GET /api/coalesce/pending-count
+ * @param {object} req - Express request
+ * @param {object} res - Express response
+ */
+export async function getPendingCount(req, res) {
+  try {
+    const result = await CoalesceScanService.getPendingCount();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    sendError(res, err);
+  }
+}
+
+/**
+ * 标记网络图已被用户查看
+ * 功能：将当前时间戳写入 app_meta.coalesce_last_seen_at，供前端判断是否有新桥梁
+ * 端点：POST /api/coalesce/mark-seen
+ * @param {object} req - Express request
+ * @param {object} res - Express response
+ */
+export async function markNetworkSeen(req, res) {
+  try {
+    const result = await CoalesceScanService.markNetworkSeen();
+    res.json({ success: true, data: result });
   } catch (err) {
     sendError(res, err);
   }

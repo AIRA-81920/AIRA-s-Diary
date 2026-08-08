@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS inspirations (
   sort_order INTEGER DEFAULT 0,  -- 排序序号（v8 新增），越小越靠前
   source_files_json TEXT,        -- 新建灵感拖入的原文文件 JSON（v11 新增），格式 [{filename, original_name, size}]
   title_ai_generated INTEGER DEFAULT 0,    -- title 是否 AI 生成待确认（v11 新增）：0=用户手写/已接受，1=AI生成待确认，2=AI提炼失败，3=AI提炼中（v12）
-  content_ai_generated INTEGER DEFAULT 0   -- content 是否 AI 生成待确认（v11 新增）：语义同上（0/1/2/3）
+  content_ai_generated INTEGER DEFAULT 0,   -- content 是否 AI 生成待确认（v11 新增）：语义同上（0/1/2/3）
+  deleted_at DATETIME,                      -- 进入快照（软删除）时间（v12 新增）：NULL = 正常灵感
+  deleted_until DATETIME                    -- 快照过期时间（v12 新增）：deleted_at + 30 天，过期后物理清理
 );
 
 -- 标签表：存储所有可用标签
@@ -160,13 +162,15 @@ CREATE TABLE IF NOT EXISTS __migrations (
 -- 实现方式：每个灵感一行，embedding 为 384 维 float32 序列化 BLOB
 CREATE TABLE IF NOT EXISTS inspiration_embeddings (
   inspiration_id TEXT PRIMARY KEY,           -- 主键；外键 → inspirations.id，级联删除
-  embedding BLOB,                            -- 384 维 float32 序列化（可空，未算时为 null）
+  embedding BLOB,                            -- 指纹向量：384 维 float32 序列化（可空，未算时为 null）
   fingerprint TEXT,                          -- LLM 生成的语义指纹（150-200 字，可空）
   fingerprint_model TEXT,                    -- 生成指纹的 LLM 模型名
   model_name TEXT,                           -- embedding 模型名（防维度漂移，R12）
   stale INTEGER DEFAULT 1,                   -- 1=需重算，0=有效（架构文档 §8.3 L6）
   fingerprint_updated_at DATETIME,           -- 指纹更新时间
-  embedding_updated_at DATETIME              -- 向量更新时间
+  embedding_updated_at DATETIME,             -- 向量更新时间
+  embedding_title BLOB,                      -- 标题向量：384 维 float32 序列化（v13 新增，多源加权，可空）
+  embedding_content BLOB                     -- 正文向量：384 维 float32 序列化（v13 新增，多源加权，可空）
 );
 
 -- 词块向量表（K3 新增，本期仅写入，读取留给扩展）
@@ -241,4 +245,13 @@ CREATE TABLE IF NOT EXISTS folders (
   sort_order INTEGER NOT NULL DEFAULT 0,    -- 侧边栏排序序号
   created_at DATETIME NOT NULL DEFAULT (datetime('now')),
   updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ===== app_meta 表：应用级键值元数据存储 =====
+-- 功能：存储后台服务运行状态时间戳等元数据，与用户设置（settings 表）分离
+-- 实现方式：key/value 键值对，供 getMeta/setMeta 工具函数读写
+-- 当前用途：coalesce_last_reap_at（reaper 上次扫描时间）、coalesce_last_seen_at（用户上次查看网络图时间）
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,             -- 元数据键名（主键）
+  value TEXT                        -- 元数据值（字符串存储，使用方按需类型转换）
 );

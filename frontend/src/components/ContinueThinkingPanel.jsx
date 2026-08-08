@@ -145,7 +145,8 @@ function ContinueThinkingPanel() {
                 key={`${item.inspiration_id}_${item.addendum_id}`}
                 type="button"
                 onClick={() => setSelectedItem(item)}
-                className="glass-card w-full text-left rounded-2xl p-5 transition-all hover:bg-veil/[0.04] group"
+                className="glow-btn glass-card w-full text-left rounded-2xl p-5 transition-all hover:bg-veil/[0.04] group"
+                data-glow="amber"
                 style={{ border: '1px solid rgb(var(--ink) / 0.06)' }}
               >
                 {/* 灵感标题 + 搁置时间 */}

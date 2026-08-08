@@ -26,7 +26,7 @@
 //   - LLM 超时 45s（LLM_LIMITS.SCAN_TIMEOUT_MS）
 //   - dismissed 边不下发 graph（L7）
 
-import { db, saveDb } from '../database/db.js';
+import { db, saveDb, getMeta, setMeta } from '../database/db.js';
 import { v4 as uuidv4 } from 'uuid';
 import EmbeddingService from './embeddingService.js';
 import FingerprintService from './fingerprintService.js';
@@ -36,7 +36,8 @@ import {
   BRIDGE_TYPES,
   BRIDGE_STATUS,
   LLM_LIMITS,
-  FORCE_GRAPH_LIMITS
+  FORCE_GRAPH_LIMITS,
+  COALESCE_QUALIFY
 } from '../config/constants.js';
 
 /**
@@ -73,6 +74,17 @@ function queryOne(sql, params = []) {
  */
 function normalizePair(idA, idB) {
   return idA < idB ? [idA, idB] : [idB, idA];
+}
+
+/**
+ * 从 inspiration_embeddings 行组装三源向量对象（委托 EmbeddingService）
+ * 功能：把指纹/标题/正文三个 BLOB 反序列化为 Float32Array，缺失源为 null
+ * 实现方式：直接调用 EmbeddingService.vecsFromRow，保证多源口径全库一致
+ * @param {object} row - SELECT inspiration_id, embedding, embedding_title, embedding_content 的行
+ * @returns {{ fingerprint: Float32Array|null, title: Float32Array|null, content: Float32Array|null }}
+ */
+function vecsFromRow(row) {
+  return EmbeddingService.vecsFromRow(row);
 }
 
 /**
@@ -116,7 +128,7 @@ export const CoalesceScanService = {
 
     // ===== 3. 校验可比对灵感数 ≥ 2 =====
     const allEmbeddings = queryAll(
-      'SELECT inspiration_id, embedding, model_name, stale FROM inspiration_embeddings WHERE embedding IS NOT NULL AND stale = 0'
+      'SELECT inspiration_id, embedding, embedding_title, embedding_content, model_name, stale FROM inspiration_embeddings WHERE embedding IS NOT NULL AND stale = 0'
     );
     if (allEmbeddings.length < 2) {
       const e = new Error('Insufficient inspirations with embeddings (need ≥ 2)');
@@ -131,14 +143,14 @@ export const CoalesceScanService = {
       e.code = 'FINGERPRINT_STALE';
       throw e;
     }
-    const currentVec = EmbeddingService.fromBlob(currentRow.embedding);
+    // 组装三源向量对象（指纹/标题/正文，缺失源为 null，由加权合成自动分摊）
+    const currentVecs = vecsFromRow(currentRow);
 
-    // ===== 4. O(n) cosine 召回 =====
+    // ===== 4. O(n) cosine 召回（三源加权合成）=====
     const others = allEmbeddings.filter(r => r.inspiration_id !== inspirationId);
     const scored = [];
     for (const row of others) {
-      const vec = EmbeddingService.fromBlob(row.embedding);
-      const score = EmbeddingService.cosine(currentVec, vec);
+      const score = EmbeddingService.weightedSimilarity(currentVecs, vecsFromRow(row)).score;
       if (score >= THRESHOLDS.CANDIDATE) {
         scored.push({ inspirationId: row.inspiration_id, vectorScore: score });
       }
@@ -199,6 +211,17 @@ export const CoalesceScanService = {
           a: pairSideA,
           b: pairSideB
         });
+
+        // 双达标门槛（2026-08）：embedding 与 LLM 分数都达标才建桥
+        //  - LLM 返回 no_link（判定无实质连接）→ 拒绝建桥
+        //  - llmScore < LLM_MIN（LLM 把握不足）→ 拒绝建桥
+        if (result.bridgeType === 'no_link' || result.llmScore < COALESCE_QUALIFY.LLM_MIN) {
+          console.log(
+            `[CoalesceScanService] pair (${aId}, ${bId}) rejected: ` +
+            `bridgeType=${result.bridgeType}, vectorScore=${s.vectorScore.toFixed(3)}, llmScore=${result.llmScore?.toFixed?.(3) ?? result.llmScore}`
+          );
+          continue;
+        }
 
         // UPSERT coalesce_bridges
         const bridgeId = uuidv4();
@@ -271,25 +294,38 @@ export const CoalesceScanService = {
       return;
     }
 
+    // fix：当前灵感已软删除（快照中）时直接跳过，不为其增量配对
+    const aliveCheck = queryOne(
+      'SELECT id FROM inspirations WHERE id = ? AND deleted_at IS NULL',
+      [inspirationId]
+    );
+    if (!aliveCheck) {
+      console.warn(`[CoalesceScanService] incrementalUpdate: inspiration ${inspirationId} is soft-deleted, skip`);
+      return;
+    }
+
     const currentRow = queryOne(
-      'SELECT embedding FROM inspiration_embeddings WHERE inspiration_id = ? AND embedding IS NOT NULL AND stale = 0',
+      'SELECT embedding, embedding_title, embedding_content FROM inspiration_embeddings WHERE inspiration_id = ? AND embedding IS NOT NULL AND stale = 0',
       [inspirationId]
     );
     if (!currentRow) {
       console.warn(`[CoalesceScanService] incrementalUpdate: no fresh embedding for ${inspirationId}`);
       return;
     }
-    const currentVec = EmbeddingService.fromBlob(currentRow.embedding);
+    const currentVecs = vecsFromRow(currentRow);
 
+    // fix：JOIN inspirations 排除已软删除灵感，避免与快照中的灵感配对
     const others = queryAll(
-      'SELECT inspiration_id, embedding FROM inspiration_embeddings WHERE inspiration_id != ? AND embedding IS NOT NULL AND stale = 0',
+      `SELECT e.inspiration_id, e.embedding, e.embedding_title, e.embedding_content
+       FROM inspiration_embeddings e
+       JOIN inspirations i ON e.inspiration_id = i.id
+       WHERE e.inspiration_id != ? AND e.embedding IS NOT NULL AND e.stale = 0 AND i.deleted_at IS NULL`,
       [inspirationId]
     );
 
     let newCandidates = 0;
     for (const row of others) {
-      const vec = EmbeddingService.fromBlob(row.embedding);
-      const score = EmbeddingService.cosine(currentVec, vec);
+      const score = EmbeddingService.weightedSimilarity(currentVecs, vecsFromRow(row)).score;
       if (score < THRESHOLDS.PERSIST) continue;
 
       const [aId, bId] = normalizePair(inspirationId, row.inspiration_id);
@@ -315,6 +351,143 @@ export const CoalesceScanService = {
   },
 
   /**
+   * 全量扫描（灵感网络左下角"扫描桥梁"按钮触发）
+   * 功能：遍历全部灵感，两两做向量召回 + LLM 深挖，补齐所有缺失桥梁
+   * 实现方式：
+   *   1. 健康门：EmbeddingService 就绪 + 可比对灵感 ≥ 2
+   *   2. 加载全库 embeddings（stale=0），两两 cosine（无向对 a<b 去重）
+   *   3. 已存在桥梁的对跳过（增量）；其余 ≥0.55 的对进候选池
+   *   4. 候选池按 vectorScore 降序，top N≤10 调 LLM 深挖写 coalesce_bridges（pending）
+   *   5. 返回汇总 { scannedPairs, newBridges, reusedBridges, candidateCount }
+   * @returns {Promise<object>} 全量扫描汇总
+   */
+  async scanAll() {
+    // 健康门
+    if (!EmbeddingService.isReady()) {
+      const e = new Error('Embedding model not ready');
+      e.code = 'EMBEDDING_UNAVAILABLE';
+      throw e;
+    }
+    // 加载全部有效 embedding（fix：JOIN inspirations 排除已软删除灵感，快照不参与全量扫描）
+    const allEmbeddings = queryAll(
+      `SELECT e.inspiration_id, e.embedding, e.embedding_title, e.embedding_content
+       FROM inspiration_embeddings e
+       JOIN inspirations i ON e.inspiration_id = i.id
+       WHERE e.embedding IS NOT NULL AND e.stale = 0 AND i.deleted_at IS NULL`
+    );
+    if (allEmbeddings.length < 2) {
+      const e = new Error('Insufficient inspirations with embeddings (need ≥ 2)');
+      e.code = 'INSUFFICIENT_INSPIRATIONS';
+      throw e;
+    }
+
+    // 两两 cosine（无向对 a<b，跳过已有桥梁的对；三源加权合成）
+    const pairs = [];
+    const seenPair = new Set();
+    for (let i = 0; i < allEmbeddings.length; i++) {
+      const vecsA = vecsFromRow(allEmbeddings[i]);
+      for (let j = i + 1; j < allEmbeddings.length; j++) {
+        const [aId, bId] = normalizePair(allEmbeddings[i].inspiration_id, allEmbeddings[j].inspiration_id);
+        const pairKey = `${aId}|${bId}`;
+        if (seenPair.has(pairKey)) continue;
+        seenPair.add(pairKey);
+
+        // 已存在桥梁的对跳过（增量）
+        const existingBridge = queryOne(
+          'SELECT id FROM coalesce_bridges WHERE inspiration_id = ? AND inspiration_b_id = ?',
+          [aId, bId]
+        );
+        if (existingBridge) continue;
+
+        const score = EmbeddingService.weightedSimilarity(vecsA, vecsFromRow(allEmbeddings[j])).score;
+        if (score >= THRESHOLDS.LLM) {
+          pairs.push({ aId, bId, vectorScore: score });
+        }
+      }
+    }
+    pairs.sort((a, b) => b.vectorScore - a.vectorScore);
+    // LLM 深挖上限（全库一轮最多 10 次，避免请求爆炸）
+    const llmPairs = pairs.slice(0, 10);
+
+    // 写候选表（全库增量）
+    let candidateCount = 0;
+    for (const p of pairs) {
+      const existing = queryOne(
+        'SELECT id FROM coalesce_candidates WHERE inspiration_id_a = ? AND inspiration_id_b = ?',
+        [p.aId, p.bId]
+      );
+      if (existing) continue;
+      db.run(
+        `INSERT INTO coalesce_candidates (id, inspiration_id_a, inspiration_id_b, vector_score, status, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?)`,
+        [uuidv4(), p.aId, p.bId, p.vectorScore, new Date().toISOString()]
+      );
+      candidateCount++;
+    }
+
+    // LLM 深挖
+    const newBridges = [];
+    let reusedBridges = 0;
+    for (const p of llmPairs) {
+      const existingBridge = queryOne(
+        'SELECT id FROM coalesce_bridges WHERE inspiration_id = ? AND inspiration_b_id = ?',
+        [p.aId, p.bId]
+      );
+      if (existingBridge) { reusedBridges++; continue; }
+
+      const pairSideA = await this._buildPairSide(p.aId);
+      const pairSideB = await this._buildPairSide(p.bId);
+      if (!pairSideA || !pairSideB) continue;
+
+      try {
+        const result = await CoalesceAgent.deepen({ a: pairSideA, b: pairSideB });
+
+        // 双达标门槛（2026-08）：同 scanFor——LLM 拒绝(no_link)或把握不足(llmScore<LLM_MIN)则不建桥
+        if (result.bridgeType === 'no_link' || result.llmScore < COALESCE_QUALIFY.LLM_MIN) {
+          console.log(
+            `[CoalesceScanService] scanAll pair (${p.aId}, ${p.bId}) rejected: ` +
+            `bridgeType=${result.bridgeType}, llmScore=${result.llmScore?.toFixed?.(3) ?? result.llmScore}`
+          );
+          continue;
+        }
+
+        const bridgeId = uuidv4();
+        const now = new Date().toISOString();
+        db.run(
+          `INSERT INTO coalesce_bridges
+            (id, candidate_id, inspiration_id, inspiration_b_id, bridge_type, connection, reason,
+             vector_score, llm_score, status, saved_at)
+           VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [bridgeId, p.aId, p.bId, result.bridgeType, result.reason, result.reason,
+           p.vectorScore, result.llmScore, BRIDGE_STATUS.PENDING, now]
+        );
+        newBridges.push(this._formatBridge({
+          id: bridgeId,
+          inspiration_id: p.aId,
+          inspiration_b_id: p.bId,
+          bridge_type: result.bridgeType,
+          reason: result.reason,
+          vector_score: p.vectorScore,
+          llm_score: result.llmScore,
+          status: BRIDGE_STATUS.PENDING,
+          saved_at: now
+        }));
+      } catch (err) {
+        console.warn(`[CoalesceScanService] scanAll LLM deepen failed for pair (${p.aId}, ${p.bId}):`, err.message);
+      }
+    }
+
+    if (newBridges.length > 0 || candidateCount > 0) saveDb();
+    console.log(`[CoalesceScanService] scanAll: ${pairs.length} pairs scored, ${candidateCount} candidates, ${newBridges.length} new bridges`);
+    return {
+      scannedPairs: pairs.length,
+      candidateCount,
+      newBridges,
+      reusedBridges
+    };
+  },
+
+  /**
    * 获取力导向图全量数据
    * 功能：返回 nodes + edges，dismissed 一律不下发（L7）
    * 实现方式：
@@ -325,11 +498,16 @@ export const CoalesceScanService = {
    * @returns {Promise<object>} GraphResponse
    */
   async getGraph() {
+    // 桥查询：JOIN 两端灵感表，任一端已软删除（deleted_at 非空）的桥一律不下发
+    // 实现：与下方节点过滤配套，防止 d3-force 出现"边引用不存在节点"的崩溃（fix 快照遗漏）
     const bridgeRows = queryAll(
-      `SELECT id, inspiration_id, inspiration_b_id, bridge_type, reason, vector_score, llm_score, status, saved_at
-       FROM coalesce_bridges
-       WHERE status != ?
-       ORDER BY saved_at DESC`,
+      `SELECT b.id, b.inspiration_id, b.inspiration_b_id, b.bridge_type, b.reason,
+              b.vector_score, b.llm_score, b.status, b.saved_at
+       FROM coalesce_bridges b
+       JOIN inspirations ia ON b.inspiration_id = ia.id
+       JOIN inspirations ib ON b.inspiration_b_id = ib.id
+       WHERE b.status != ? AND ia.deleted_at IS NULL AND ib.deleted_at IS NULL
+       ORDER BY b.saved_at DESC`,
       [BRIDGE_STATUS.DISMISSED]
     );
 
@@ -349,6 +527,7 @@ export const CoalesceScanService = {
         source: row.inspiration_id,
         target: row.inspiration_b_id,
         bridgeType: row.bridge_type,
+        reason: row.reason,
         vectorScore: row.vector_score,
         llmScore: row.llm_score,
         status: row.status
@@ -366,8 +545,10 @@ export const CoalesceScanService = {
     }
 
     // 加载所有灵感（含孤立节点），节点字段加 hasBridges 标识
+    // fix：过滤已软删除灵感（deleted_at IS NULL），快照中的灵感不出现在网络图
     const allInspirationRows = queryAll(
-      `SELECT id, title, inspiration_type FROM inspirations`
+      `SELECT id, title, inspiration_type FROM inspirations
+       WHERE deleted_at IS NULL`
     );
     const nodes = allInspirationRows.map((row) => ({
       id: row.id,
@@ -377,7 +558,67 @@ export const CoalesceScanService = {
       hasBridges: connectedNodeIds.has(row.id)
     }));
 
-    return { nodes, edges };
+    // 查询 pending 状态桥梁数量（供前端显示未策展待办徽章）
+    // 功能：统计 coalesce_bridges 中 status='pending' 的行数，随 graph 一起下发
+    // fix：同步排除已软删除灵感的桥，避免徽标计数包含快照中的灵感
+    const pendingRow = queryOne(
+      `SELECT COUNT(*) as cnt
+       FROM coalesce_bridges b
+       JOIN inspirations ia ON b.inspiration_id = ia.id
+       JOIN inspirations ib ON b.inspiration_b_id = ib.id
+       WHERE b.status = ? AND ia.deleted_at IS NULL AND ib.deleted_at IS NULL`,
+      [BRIDGE_STATUS.PENDING]
+    );
+    const pendingCount = pendingRow ? pendingRow.cnt : 0;
+
+    return { nodes, edges, pendingCount };
+  },
+
+  /**
+   * 获取 pending 桥梁数量与上次查看时间
+   * 功能：返回 pending 状态桥梁数量 + 用户上次查看网络图的时间戳（供前端徽章对比）
+   * 实现方式：
+   *   1. COUNT(*) 查询 coalesce_bridges 中 status='pending' 的行数
+   *   2. 从 app_meta 读 coalesce_last_seen_at（可能为 null，表示从未查看过）
+   * @returns {Promise<{ count: number, lastSeenAt: number|null }>}
+   */
+  async getPendingCount() {
+    // 读取上次查看时间戳（字符串存储毫秒数，转 number 返回；不存在返回 null）
+    const lastSeenAtStr = getMeta('coalesce_last_seen_at');
+    const lastSeenAt = lastSeenAtStr ? Number(lastSeenAtStr) : null;
+
+    // lastSeenAt 转成与 saved_at 一致的 ISO 字符串，用于"只统计新增"过滤
+    // （saved_at 存 new Date().toISOString()，即 UTC ISO；两者可直接字符串比较）
+    const lastSeenIso = lastSeenAt ? new Date(lastSeenAt).toISOString() : null;
+
+    // 查询已上次看图后"新增"的 pending 桥梁数量：
+    //   - 排除已软删除灵感的桥（保证徽标计数只含活跃灵感）
+    //   - 仅统计 saved_at 晚于 lastSeenAt 的桥（用户看一次即消除，直到新桥出现）
+    //   - lastSeenAt 为 null（从未看图）时不过滤，返回全部 pending 数量
+    const row = queryOne(
+      `SELECT COUNT(*) as cnt
+       FROM coalesce_bridges b
+       JOIN inspirations ia ON b.inspiration_id = ia.id
+       JOIN inspirations ib ON b.inspiration_b_id = ib.id
+       WHERE b.status = ?
+         AND ia.deleted_at IS NULL AND ib.deleted_at IS NULL
+         AND (? IS NULL OR b.saved_at > ?)`,
+      [BRIDGE_STATUS.PENDING, lastSeenIso, lastSeenIso]
+    );
+    const count = row ? row.cnt : 0;
+
+    return { count, lastSeenAt };
+  },
+
+  /**
+   * 标记网络图已被用户查看
+   * 功能：将当前时间戳写入 app_meta.coalesce_last_seen_at，供前端判断是否有新桥梁未看
+   * 实现方式：setMeta 写入 Date.now()（setMeta 内部已 saveDb 落盘）
+   * @returns {Promise<{ success: boolean }>}
+   */
+  async markNetworkSeen() {
+    setMeta('coalesce_last_seen_at', Date.now());
+    return { success: true };
   },
 
   /**

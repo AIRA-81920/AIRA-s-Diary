@@ -52,9 +52,10 @@ export const Inspiration = {
   // 获取灵感列表（分页 + 搜索 + 文件夹过滤）
   // 实现：按 sort_order ASC, created_at DESC 排序，支持 limit/offset 分页，search 匹配 title 或 content
   // v8 新增：folderId 参数，传入时只返回该文件夹内的灵感；'none' 表示只返回散灵感
+  // v12 快照机制：默认只返回活跃灵感（deleted_at IS NULL），软删除的记录进快照区不在此展示
   getAll({ limit = 100, offset = 0, search, folderId } = {}) {
     let sql = 'SELECT * FROM inspirations';
-    const conditions = [];
+    const conditions = ['deleted_at IS NULL']; // v12：默认过滤快照（软删除）记录
     const params = [];
     // 有搜索关键词时追加 WHERE 条件（参数化绑定防止 SQL 注入）
     if (search) {
@@ -149,12 +150,60 @@ export const Inspiration = {
 
   // 关键词搜索灵感（匹配 title 或 content）
   // 实现：参数化 LIKE 查询，按 created_at DESC 排序
+  // v12：只搜索活跃灵感（过滤快照记录）
   search(q) {
     if (!q) return [];
     return queryAll(
-      'SELECT * FROM inspirations WHERE title LIKE ? OR content LIKE ? ORDER BY created_at DESC',
+      'SELECT * FROM inspirations WHERE deleted_at IS NULL AND (title LIKE ? OR content LIKE ?) ORDER BY created_at DESC',
       [`%${q}%`, `%${q}%`]
     );
+  },
+
+  // ========== v12 快照（软删除/回收站）机制 ==========
+
+  // 软删除灵感：进入快照区而非物理删除
+  // 实现：设置 deleted_at = now、deleted_until = now + 保留期（默认 30 天）
+  // 说明：灵感目录与所有关联数据（词块/结晶/外延/桥梁）全部保留，恢复可 100% 复原
+  softDelete(id, retentionDays = 30) {
+    const now = new Date().toISOString();
+    const until = new Date(Date.now() + retentionDays * 24 * 60 * 60 * 1000).toISOString();
+    db.run('UPDATE inspirations SET deleted_at = ?, deleted_until = ? WHERE id = ?', [now, until, id]);
+    saveDb();
+    return this.getById(id);
+  },
+
+  // 快照列表：所有软删除记录，按进入快照时间倒序
+  // 实现：deleted_at IS NOT NULL → ORDER BY deleted_at DESC（新的在前）
+  listSnapshots({ limit = 100, offset = 0 } = {}) {
+    return queryAll(
+      'SELECT * FROM inspirations WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC LIMIT ? OFFSET ?',
+      [limit, offset]
+    );
+  },
+
+  // 恢复快照：清除软删除标记，回到删除前的文件夹
+  // 实现：deleted_at / deleted_until 置 NULL，并刷新 updated_at
+  restore(id) {
+    db.run(
+      'UPDATE inspirations SET deleted_at = NULL, deleted_until = NULL, updated_at = ? WHERE id = ?',
+      [new Date().toISOString(), id]
+    );
+    saveDb();
+    return this.getById(id);
+  },
+
+  // 清理过期快照：返回被物理删除的 ID 列表（供调用方同步删除灵感目录）
+  // 实现：deleted_until 非空且早于当前时间 → 物理删除（级联清理关联表）
+  purgeExpired() {
+    const now = new Date().toISOString();
+    const expired = queryAll(
+      'SELECT id FROM inspirations WHERE deleted_at IS NOT NULL AND deleted_until IS NOT NULL AND deleted_until < ?',
+      [now]
+    );
+    for (const row of expired) {
+      this.delete(row.id);
+    }
+    return expired.map((r) => r.id);
   },
 
   // 获取最近 N 天的灵感（为后续里程碑的重复检测/相似查找铺路）
@@ -169,10 +218,11 @@ export const Inspiration = {
     );
   },
 
-  // 返回灵感总数
+  // 返回活跃灵感总数
   // 实现：COUNT 聚合查询，取出 total 字段
+  // fix：WHERE deleted_at IS NULL — 排除快照中的已删除灵感，保证列表 total 与条目数一致
   count() {
-    const row = queryOne('SELECT COUNT(*) as total FROM inspirations');
+    const row = queryOne('SELECT COUNT(*) as total FROM inspirations WHERE deleted_at IS NULL');
     return row ? row.total : 0;
   },
 

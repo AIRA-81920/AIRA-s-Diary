@@ -28,6 +28,7 @@ import {
   MULTILINGUAL_EMBEDDING_MODEL,
   EMBEDDING_DIMENSION,
   EMBEDDING_BATCH_SIZE,
+  EMBEDDING_WEIGHTS,
   LLM_LIMITS
 } from '../config/constants.js';
 
@@ -246,6 +247,69 @@ export const EmbeddingService = {
   },
 
   /**
+   * 三源加权相似度合成（多源召回共用）
+   * 功能：按「标题 / 正文 / 指纹」三源各自的余弦相似度 + EMBEDDING_WEIGHTS 权重合成总分
+   * 实现方式：
+   *   1. 输入 aVecs / bVecs 为 { fingerprint, title, content }，每项是 Float32Array 或 null
+   *   2. 逐源比对：仅当双方该源向量都存在才参与余弦计算
+   *   3. 某源缺失时，该源权重按比例分摊到其余已参与源上，保证总分落在权重正常区间、不畸变
+   * @param {{fingerprint?: Float32Array, title?: Float32Array, content?: Float32Array}} aVecs - A 方三源向量
+   * @param {{fingerprint?: Float32Array, title?: Float32Array, content?: Float32Array}} bVecs - B 方三源向量
+   * @returns {{ score: number, sources: {title?: number, content?: number, fingerprint?: number}, basis: string[] }}
+   *          score 为加权总分；basis 为实际参与合成的源名；sources 为各源独立 cosine
+   */
+  weightedSimilarity(aVecs, bVecs) {
+    // 三源权重表（缺省 title/content/fingerprint）
+    const srcNames = ['title', 'content', 'fingerprint'];
+
+    // 逐源算 cosine，只在双方该源向量都存在时参与
+    const cos = {};
+    const present = [];
+    for (const name of srcNames) {
+      const a = aVecs && aVecs[name];
+      const b = bVecs && bVecs[name];
+      if (a && b && a.length > 0 && b.length > 0) {
+        cos[name] = this.cosine(a, b);
+        present.push(name);
+      }
+    }
+    // 无任何源可比（全部缺失）：返回 0 分
+    if (present.length === 0) {
+      return { score: 0, sources: {}, basis: [] };
+    }
+
+    // 收集参与源的原始权重
+    const rawWeights = { title: EMBEDDING_WEIGHTS.TITLE, content: EMBEDDING_WEIGHTS.CONTENT, fingerprint: EMBEDDING_WEIGHTS.FINGERPRINT };
+    // 参与源权重和（防御：全部为 0 / 缺失时回退等权，见 _nonZeroSum）
+    const presentWeightSum = this._nonZeroSum(present, rawWeights);
+
+    // 把缺失源权重按比例分摊到参与源，保证总和 = 1
+    let score = 0;
+    const sources = {};
+    for (const name of present) {
+      const w = rawWeights[name] / presentWeightSum;
+      sources[name] = cos[name];
+      score += w * cos[name];
+    }
+    return { score, sources, basis: present };
+  },
+
+  /**
+   * 计算参与源权重之和（防御：权重表异常时兜底为各源等权重）
+   * @private
+   * @param {string[]} present - 参与合成的源名
+   * @param {object} rawWeights - 三源原始权重
+   * @returns {number} 参与源权重和（>0）
+   */
+  _nonZeroSum(present, rawWeights) {
+    let sum = 0;
+    for (const n of present) sum += (rawWeights[n] ?? 0);
+    if (sum > 0) return sum;
+    // 权重表全缺失/全 0：回退各源等权
+    return present.length;
+  },
+
+  /**
    * 将 Float32Array 序列化为 Buffer（BLOB 存入 SQLite）
    * 功能：供 fingerprintService 把 embedding 写入 inspiration_embeddings.embedding 列
    * 实现方式：Buffer.from(float32Array.buffer) 直接共享底层 ArrayBuffer（零拷贝）
@@ -269,6 +333,21 @@ export const EmbeddingService = {
   fromBlob(blob) {
     if (!blob || blob.length === 0) return null;
     return new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4);
+  },
+
+  /**
+   * 从 inspiration_embeddings 行组装三源向量对象（多源召回/对账共用）
+   * 功能：把指纹/标题/正文三个 BLOB 反序列化为 Float32Array，缺失源为 null
+   * 实现方式：fromBlob × 3；子源缺失（旧数据未回填）返回 null，由加权合成自动分摊
+   * @param {object} row - 至少含 embedding / embedding_title / embedding_content 字段的行
+   * @returns {{ fingerprint: Float32Array|null, title: Float32Array|null, content: Float32Array|null }}
+   */
+  vecsFromRow(row) {
+    return {
+      fingerprint: row.embedding ? this.fromBlob(row.embedding) : null,
+      title: row.embedding_title ? this.fromBlob(row.embedding_title) : null,
+      content: row.embedding_content ? this.fromBlob(row.embedding_content) : null
+    };
   }
 };
 

@@ -120,7 +120,8 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
                     type="button"
                     onClick={() => excavateProposal(inspiration, p)}
                     disabled={loading}
-                    className="w-full text-left px-3 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up glass-card font-sans"
+                    className="glow-btn w-full text-left px-3 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up glass-card font-sans"
+                    data-glow="purple"
                     style={{
                       borderColor: 'rgba(59,130,246,0.15)',
                       background: 'rgba(59,130,246,0.05)',
@@ -160,7 +161,8 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
                 type="button"
                 onClick={() => startEpitaxyPropose(inspiration)}
                 disabled={loading}
-                className="w-full text-left px-4 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up glass-card font-sans"
+                className="glow-btn w-full text-left px-4 py-3 rounded-xl border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up glass-card font-sans"
+                data-glow="purple"
                 style={{
                   borderColor: 'rgba(168,85,247,0.25)',
                   background: 'rgba(168,85,247,0.06)'
@@ -200,7 +202,8 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
                       type="button"
                       onClick={() => excavateProposal(inspiration, p)}
                       disabled={loading}
-                      className="w-full text-left px-3 py-2 rounded-lg border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up font-sans opacity-60 hover:opacity-90"
+                      className="glow-btn w-full text-left px-3 py-2 rounded-lg border transition-all hover:scale-[1.01] disabled:opacity-40 animate-fade-in-up font-sans opacity-60 hover:opacity-90"
+                      data-glow="purple"
                       style={{
                         borderColor: 'rgb(var(--ink) / 0.06)',
                         background: 'rgb(var(--ink) / 0.02)',
@@ -281,7 +284,7 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
               <div
                 key={frag.id || fIdx}
                 onClick={() => toggleChunk(frag.id, frag)}
-                className="mb-3 animate-fade-in-up cursor-pointer transition-all rounded-xl p-3 border"
+                className="glow-card mb-3 animate-fade-in-up cursor-pointer transition-all rounded-xl p-3 border"
                 style={{
                   borderColor: isSelected ? fragColor : 'rgb(var(--ink) / 0.08)',
                   background: isSelected ? `${fragColor}10` : 'transparent',
@@ -325,7 +328,7 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
               {selectedChunks.map((c) => (
                 <span
                   key={c.id}
-                  className="px-2 py-0.5 rounded-md text-[10px] cursor-pointer font-sans flex items-center gap-1 max-w-[220px] truncate"
+                  className="glow-card px-2 py-0.5 rounded-md text-[10px] cursor-pointer font-sans flex items-center gap-1 max-w-[220px] truncate"
                   style={{
                     background: `${KIND_COLORS[c.kind] || '#6b7280'}15`,
                     color: KIND_COLORS[c.kind] || '#9ca3af',
@@ -343,7 +346,7 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
               type="button"
               onClick={() => distillChunks(inspiration.id)}
               disabled={loading}
-              className="btn-accent w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+              className="glow-btn btn-accent w-full flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
             >
               {loading ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
               <span>完成保留</span>
@@ -414,7 +417,8 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
           <button
             type="button"
             onClick={backToProposals}
-            className="glass-card flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors font-sans"
+            className="glow-btn glass-card flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-ink/55 hover:text-ink/85 text-xs transition-colors font-sans"
+            data-glow="purple"
           >
             <BookOpen size={12} />
             <span>查看其他方向</span>
@@ -423,7 +427,7 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
             type="button"
             onClick={() => closeDrawer()}
             disabled={loading}
-            className="btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
+            className="glow-btn btn-accent flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-white text-xs font-medium font-sans"
             title="关闭抽屉，词块已沉淀到档案"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}

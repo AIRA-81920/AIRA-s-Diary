@@ -13,8 +13,9 @@ import React from 'react'
  * 共用容器：玻璃态卡片 + 标题 + 副标题
  * 功能：统一动画外层包装，让 6 个动画共用同一布局
  * 实现方式：纯展示组件，children 是动画 SVG
+ * bare=true：不渲染画布玻璃卡片框（仅保留光晕），用于自带尺寸的 loader
  */
-function AnimShell({ color, title, subtitle, children }) {
+function AnimShell({ color, title, subtitle, children, bare = false }) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center text-center px-6 py-8">
       {/* 动画主体 */}
@@ -24,13 +25,19 @@ function AnimShell({ color, title, subtitle, children }) {
           className="absolute inset-0 rounded-full blur-xl"
           style={{ background: `${color}25`, animation: 'pulseSoft 2.4s ease-in-out infinite' }}
         />
-        {/* SVG 动画画布（96x96） */}
-        <div
-          className="relative w-20 h-20 rounded-2xl flex items-center justify-center glass-card"
-          style={{ borderColor: `${color}40` }}
-        >
-          {children}
-        </div>
+        {/* 动画画布：默认玻璃卡片框；bare 模式只居中不渲染框 */}
+        {bare ? (
+          <div className="relative flex items-center justify-center">
+            {children}
+          </div>
+        ) : (
+          <div
+            className="relative w-20 h-20 rounded-2xl flex items-center justify-center glass-card"
+            style={{ borderColor: `${color}40` }}
+          >
+            {children}
+          </div>
+        )}
       </div>
       <h3 className="font-display text-lg font-semibold text-ink/85 mb-2 animate-fade-in-up">
         {title}
@@ -73,8 +80,8 @@ export function CrystalSensingAnim() {
 /**
  * 2. CrystalQuestioningAnim - 结晶生成问题中
  * 场景：类型确定后，AI 生成定制化追问问题
- * 心智模型：问号符号闪烁 + 文字线条逐行出现，像在草拟问卷
- * 实现：3 个问号依次浮现+淡出，下方 3 行文字线条逐行绘制
+ * 心智模型：小球弹跳 + 脚印逐格前进，像 AI 在逐题草拟问卷
+ * 实现：Uiverse loader（loading-bounce + loading-step 双动画），替换原问号闪烁
  */
 export function CrystalQuestioningAnim() {
   return (
@@ -82,16 +89,11 @@ export function CrystalQuestioningAnim() {
       color="#06b6d4"
       title="正在生成追问问题..."
       subtitle="基于灵感类型，AI 在定制化追问维度"
+      bare
     >
-      <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
-        {/* 3 个问号依次闪烁（错峰 0.6s） */}
-        <text x="10" y="20" fontSize="14" fill="#06b6d4" style={{ animation: 'blinkFade 1.8s ease-in-out infinite', transformOrigin: '10px 16px' }}>?</text>
-        <text x="20" y="32" fontSize="18" fill="#06b6d4" style={{ animation: 'blinkFade 1.8s ease-in-out infinite 0.6s', transformOrigin: '20px 26px' }}>?</text>
-        <text x="32" y="18" fontSize="12" fill="#06b6d4" style={{ animation: 'blinkFade 1.8s ease-in-out infinite 1.2s', transformOrigin: '32px 14px' }}>?</text>
-        {/* 底部文字线条（3 条，依次绘制） */}
-        <line x1="6" y1="40" x2="42" y2="40" stroke="#06b6d4" strokeWidth="1" opacity="0.4" style={{ animation: 'drawLine 1.8s ease-in-out infinite', transformOrigin: 'left center' }} />
-        <line x1="10" y1="44" x2="38" y2="44" stroke="#06b6d4" strokeWidth="1" opacity="0.25" style={{ animation: 'drawLine 1.8s ease-in-out infinite 0.6s', transformOrigin: 'left center' }} />
-      </svg>
+      <div className="crystal-loader-wrap">
+        <div className="crystal-loader" />
+      </div>
     </AnimShell>
   )
 }

@@ -30,9 +30,13 @@ const LOG_PREFIX = '[VisionService]';
 // 追加图片上传目录（与 addendumController.js 保持一致：uploads/addenda/）
 const UPLOADS_ADDENDA_DIR = path.resolve(process.cwd(), 'uploads', 'addenda');
 
-// systemPrompt（需求文档 7.8.1，单一来源，禁止散落）
-// 功能：约束 LLM 客观描述图片，分类处理环境图/文本图，强制中文输出
-const SYSTEM_PROMPT = `你是 AIRA 系统的视觉描述助手，擅长客观描述图片内容。
+// ===== systemPrompt（需求文档 7.8.1，单一来源，禁止散落）=====
+// 功能：约束 LLM 客观描述图片，分类处理环境图/文本图，强制中文输出；
+//       当携带灵感语境（context：标题+指纹）时，追加可选的"关联补充"层，
+//       让描述贴合灵感材料——仅当确有概念/意象关联时才补一句，强约束不许硬凑
+
+// 基础段（始终存在）：客观描述的三大原则 + 输出格式
+const BASE_SYSTEM_PROMPT = `你是 AIRA 系统的视觉描述助手，擅长客观描述图片内容。
 
 ## 核心原则
 1. **客观描述**：只描述图片中确实存在的物体、场景、人物、文字，不添加主观意象或情感渲染
@@ -45,8 +49,57 @@ const SYSTEM_PROMPT = `你是 AIRA 系统的视觉描述助手，擅长客观描
 ## 输出格式
 纯文本，一段话，无标题，无 JSON 包裹，无 markdown 标记。`;
 
+// 语境 + 关联/延伸段（仅在提供灵感 context 时拼入）：
+//   - 语境仅作背景参考，不强求匹配
+//   - 关联层是可选：确有概念/意象呼应才点出具体意象，不泛泛说"相关"
+//   - 延伸层更克制：仅在关联成立且视角明确可成立时，给一句启发性的视角；否则省略
+//   - 严格克制：任何牵强/泛泛/臆测都禁止，宁可只留客观描述
+const CONTEXT_SYSTEM_PROMPT = `
+
+## 灵感语境（仅作背景参考）
+你正为某个灵感（思考条目）识别图片。以下是它所属灵感的标题与语义指纹，**仅作背景参考**，
+帮助你判断图片是否与它相关；它不要求你改变对图片的事实描述。
+所属灵感标题：\${title}
+灵感语义指纹：\${fingerprint}
+
+## 关联与延伸（可选层，严格克制）
+在完成客观描述后，**仅当**图片内容与灵感确有可成立的联系时才考虑补充，分两层，任一层不符合就省略：
+1. **灵感关联**：图片与灵感在"文本概念相似"或"意象/主题一致"上确有呼应时，点出**所呼应的具体意象或概念**
+   （如"锈蚀军事头盔与少女裙摆同框"），不要用"呼应XX""与之相关"这类泛泛表述。
+2. **灵感延伸**（更克制）：在关联成立的前提下，若画面与灵感之间存在**明确、可自然成立的视角延伸**，
+   再用一句话给出"这一画面可为这条灵感补充的视角/思路"。若延伸牵强、不确定、或只是泛泛的创作建议，一律省略。
+- 文字图（截图/文档/笔记）：看识别出的文字与灵感概念是否呼应
+- 环境图：看画面主体、意象与灵感的意象是否可对应
+**任何牵强、泛泛、臆测的联想都严格禁止，宁可只保留客观描述。**
+
+## 输出格式
+（客观描述一段话）
+
+灵感关联：…（可选，仅当确有呼应时）
+灵感延伸：…（可选，仅在关联成立且视角明确时）`;
+
 // 修正提示（重试时追加到 text part 末尾，参考 FingerprintService 的修正提示模式）
-const RETRY_HINT = '\n\n## 上次识别失败，请重新客观描述图片，严格遵守输出格式（纯文本，一段话，无标题，无 JSON 包裹，无 markdown 标记）。';
+const RETRY_HINT = '\n\n## 上次识别失败，请重新客观描述图片，严格遵守输出格式（纯文本，客观描述一段话；如有灵感语境，灵感关联/延伸仅在确凿时应给出，牵强的一律省略）。';
+
+/**
+ * 组装最终 systemPrompt
+ * 功能：根据是否提供灵感 context（title+fingerprint）决定是否拼入"语境 + 关联补充"段
+ * 实现方式：context 中 title/fingerprint 任一有效时，用 CONTEXT_SYSTEM_PROMPT 的模板替换变量再拼接；
+ *           否则只返回基础段（纯客观描述，不注入灵感语境）
+ * @param {{ title?: string, fingerprint?: string }|null} context - 灵感语境
+ * @returns {string} 完整 systemPrompt
+ */
+function buildSystemPrompt(context) {
+  let prompt = BASE_SYSTEM_PROMPT;
+  const hasTitle = !!(context && context.title && String(context.title).trim());
+  const hasFingerprint = !!(context && context.fingerprint && String(context.fingerprint).trim());
+  // 两者都无 → 纯客观（用户约定：缺语境时不做任何贴合）
+  if (!hasTitle && !hasFingerprint) return prompt;
+  // 有语境：拼入语境 + 关联补充段（title/fingerprint 缺失的用空占位）
+  return prompt + CONTEXT_SYSTEM_PROMPT
+    .replace('${title}', context.title || '')
+    .replace('${fingerprint}', context.fingerprint || '');
+}
 
 // 扩展名 → MIME type 映射（白名单，与 addendumController 的 ALLOWED_MIME 对齐）
 const EXT_TO_MIME = {
@@ -100,16 +153,16 @@ export const VisionService = {
    * 实现方式：
    *   1. 输入支持 imagePath 或 imageBase64+mimeType 两种形式（二选一）
    *   2. 读图转 base64（imagePath 模式），或直接使用传入的 base64
-   *   3. 构建 content: [{type:'text', text:SYSTEM_PROMPT}, {type:'image_url', image_url:{url:'data:...'}}]
+   *   3. 构建 content: [{type:'text', text:systemPrompt(context)}, {type:'image_url', image_url:{url:'data:...'}}]
    *   4. 调 _callLLM（withTimeout 30s + withRetry 1 次）
    *   5. 第一次失败：带修正提示重试 1 次（参考 FingerprintService.generate 模式）
    *   6. 返回 { description }
-   * @param {{ imagePath?: string, imageBase64?: string, mimeType?: string }} input - 图片输入
+   * @param {{ imagePath?: string, imageBase64?: string, mimeType?: string, context?: {title?: string, fingerprint?: string} }} input - 图片输入
    * @returns {Promise<{ description: string }>}
    * @throws {Error} 输入非法 / 客户端未配置 / 文件不存在 / LLM 超时 / 输出空时抛错
    */
   async describeImage(input) {
-    const { imagePath, imageBase64, mimeType } = input || {};
+    const { imagePath, imageBase64, mimeType, context } = input || {};
 
     // ===== 1. 解析图片 base64 + mimeType =====
     let base64, finalMime;
@@ -130,12 +183,14 @@ export const VisionService = {
 
     // ===== 2. 构建 OpenAI vision 消息 =====
     // 消息结构：content 数组含 text（systemPrompt）+ image_url（data URL）两个 part
+    // systemPrompt 依据 context（标题+指纹）动态组装：有语境时拼接"关联补充"层，否则纯客观
     const dataUrl = `data:${finalMime};base64,${base64}`;
+    const systemPrompt = buildSystemPrompt(context);
     const messages = [
       {
         role: 'user',
         content: [
-          { type: 'text', text: SYSTEM_PROMPT },
+          { type: 'text', text: systemPrompt },
           { type: 'image_url', image_url: { url: dataUrl } }
         ]
       }
@@ -153,7 +208,7 @@ export const VisionService = {
           role: 'user',
           content: [
             // 修正提示追加到 text part 末尾，image_url part 保持不变
-            { type: 'text', text: SYSTEM_PROMPT + RETRY_HINT },
+            { type: 'text', text: systemPrompt + RETRY_HINT },
             { type: 'image_url', image_url: { url: dataUrl } }
           ]
         }
@@ -168,21 +223,23 @@ export const VisionService = {
    * 为追加条目的图片生成描述
    * 功能：包装 describeImage，图片路径来自 uploads/addenda/<filename>
    * 实现方式：拼接绝对路径 → 调 describeImage → 返回 { description }
+   *   - context 为可选的灵感语境（标题+指纹），用于提示词贴合灵感材料；
+   *     缺省/null 时退回纯客观描述
    *   - 不直接写 DB，DB 更新（images_json）由 taskQueue 处理
    *   - addendumId 仅用于日志追踪，本服务不查 DB
-   * @param {{ addendumId: string, filename: string }} input - 追加条目 ID + 图片文件名
+   * @param {{ addendumId: string, filename: string, context?: {title?: string, fingerprint?: string} }} input - 追加条目 ID + 图片文件名 + 灵感语境
    * @returns {Promise<{ description: string }>}
    * @throws {Error} filename 缺失 / 文件不存在 / LLM 失败时抛错
    */
-  async describeForAddendum({ addendumId, filename }) {
+  async describeForAddendum({ addendumId, filename, context }) {
     if (!filename) {
       const err = new Error('filename is required');
       err.code = 'VISION_INVALID_INPUT';
       throw err;
     }
     const imagePath = path.join(UPLOADS_ADDENDA_DIR, filename);
-    console.log(`${LOG_PREFIX} describeForAddendum: addendumId=${addendumId}, file=${filename}`);
-    return this.describeImage({ imagePath });
+    console.log(`${LOG_PREFIX} describeForAddendum: addendumId=${addendumId}, file=${filename}, hasContext=${!!(context && (context.title || context.fingerprint))}`);
+    return this.describeImage({ imagePath, context });
   },
 
   // ========== 私有方法 ==========
