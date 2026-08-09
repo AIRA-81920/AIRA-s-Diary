@@ -36,9 +36,9 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 模型缓存目录：__dirname 相对路径（修复 V0.6 硬编码 bug）
-// 解析为 backend/.cache/hub（与 V0.6 搬运过来的目录结构一致）
-const CACHE_DIR = path.resolve(__dirname, '../../.cache/hub');
+// 模型缓存目录：优先环境变量（Electron 打包后由主进程注入 %APPDATA% 或 resources/models），
+// 否则回退 __dirname 相对路径（与 V0.6 搬运过来的目录结构一致：backend/.cache/hub）
+const CACHE_DIR = process.env.CACHE_DIR || path.resolve(__dirname, '../../.cache/hub');
 
 // 单例状态（模块级变量）
 let pipelineFn = null;     // @huggingface/transformers 的 pipeline 函数

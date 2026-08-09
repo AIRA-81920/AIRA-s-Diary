@@ -1,7 +1,9 @@
 {
   "name": "airas-diary",
+  "version": "3.5.0",
   "description": "AIRA's Diary — AI 驱动的灵感管理与深度思考工作流系统",
   "private": true,
+  "main": "electron/main.js",
   "workspaces": [
     "backend",
     "frontend"
@@ -11,9 +13,72 @@
     "dev:backend": "npm run dev -w backend",
     "dev:frontend": "npm run dev -w frontend",
     "install:all": "npm install --workspaces",
-    "build": "npm run build -w frontend"
+    "build": "npm run build -w frontend",
+    "electron:dev": "concurrently -k -c cyan,magenta,green \"npm run dev -w backend\" \"npm run dev -w frontend\" \"wait-on tcp:5173 && cross-env VITE_DEV_URL=http://localhost:5173 electron electron/main.js\"",
+    "electron:build": "npm run build -w frontend && electron-builder --win nsis",
+    "electron:dir": "npm run build -w frontend && electron-builder --dir"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "multer": "^2.2.0",
+    "openai": "^4.55.0",
+    "sql.js": "^1.10.3",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "concurrently": "^8.2.2"
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.aira.diary",
+    "productName": "AIRA's Diary",
+    "directories": {
+      "output": "release-final"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/dist/**/*",
+      "package.json",
+      {
+        "from": "backend",
+        "to": "backend",
+        "filter": [
+          "**/*",
+          "!.cache/**",
+          "!data/**",
+          "!uploads/**",
+          "!nodemon.json",
+          "!package-lock.json"
+        ]
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/sql.js/dist/**/*",
+      "node_modules/@huggingface/transformers/dist/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend/.cache/hub/Xenova",
+        "to": "models/Xenova",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "AIRA.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "AIRA's Diary"
+    }
   }
 }

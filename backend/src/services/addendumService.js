@@ -10,6 +10,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { db, saveDb } from '../database/db.js';
 import { v4 as uuidv4 } from 'uuid';
+// Electron 打包路径适配：上传目录统一走 paths
+import { resolveAddendaDir } from '../config/paths.js';
 
 /**
  * 执行 SQL 查询并返回所有匹配行（对象数组）
@@ -471,7 +473,7 @@ export async function readAddendumFiles(addendumId) {
 
   // 3. 逐个读取文件内容
   // 存储目录与 addendumController 的 multer dest 一致：uploads/addenda/
-  const baseDir = path.resolve(process.cwd(), 'uploads', 'addenda');
+  const baseDir = resolveAddendaDir();
   const results = [];
   for (const meta of filesMeta) {
     const filename = meta?.filename;

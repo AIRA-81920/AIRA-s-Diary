@@ -2,9 +2,10 @@ import React, { useState, useEffect, useRef } from 'react'
 import { flushSync } from 'react-dom'
 import useStore from '../services/store.js'
 import { rippleSwitchTheme } from '../services/themeTransition.js'
-import { X, Settings, Globe, Eye, EyeOff, Archive, RotateCcw, Trash2, Clock } from 'lucide-react'
+import { X, Settings, Globe, Eye, EyeOff, Archive, RotateCcw, Trash2, Clock, Info, BookOpen, Github, Bug } from 'lucide-react'
 // v12 快照机制：快照管理区块需要调用快照 API（列表/恢复/物理删除）
 import api from '../services/api.js'
+import { openExternalLink } from '../services/openLink.js'
 
 // 各 Agent 元信息：label 显示名、description 描述、color 圆点颜色
 // v11 多模态扩展：新增 VISION（识图）、DISTILL（提炼）
@@ -544,6 +545,19 @@ export default function SettingsPanel() {
               <Archive size={14} />
               <span>快照管理</span>
             </button>
+            {/* 关于 tab：使用指南 / GitHub / Issue / 版本号 */}
+            <button
+              type="button"
+              onClick={() => setActiveTab('about')}
+              className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-all text-sm ${
+                activeTab === 'about'
+                  ? 'text-ink/90 bg-veil/[0.06] border-r-2 border-cyan-400/50'
+                  : 'text-ink/40 hover:text-ink/60 hover:bg-veil/[0.03]'
+              }`}
+            >
+              <Info size={14} />
+              <span>关于</span>
+            </button>
           </nav>
         </div>
 
@@ -552,7 +566,7 @@ export default function SettingsPanel() {
           {/* 顶部栏 */}
           <div className="flex items-center justify-between px-6 py-4 border-b border-line/[0.06]">
             <h2 className="text-sm font-medium text-ink/80">
-              {activeTab === 'api' ? 'API 设置' : activeTab === 'snapshot' ? '快照管理' : '外观设置'}
+              {activeTab === 'api' ? 'API 设置' : activeTab === 'snapshot' ? '快照管理' : activeTab === 'about' ? '关于' : '外观设置'}
             </h2>
             <button
               type="button"
@@ -585,6 +599,8 @@ export default function SettingsPanel() {
             ) : activeTab === 'snapshot' ? (
               // v12 快照管理：软删除灵感列表（回收站）
               <SnapshotTab />
+            ) : activeTab === 'about' ? (
+              <AboutTab />
             ) : (
               <AppearanceTab />
             )}
@@ -637,6 +653,9 @@ function SnapshotTab() {
       await useStore.getState().loadInspirations()
       // 恢复后刷新文件夹计数（灵感回到原文件夹，数量 +1）
       useStore.getState().loadFolders()
+      // 恢复后刷新"接着想"面板：软删除期间 saved_ai_replies 数据保留，
+      // 恢复后后端 listSavedRepliesForFeed 会重新纳入该灵感的 saved replies
+      useStore.getState().loadSavedReplies()
       loadSnapshots()
     } catch (err) {
       setError(err.message)
@@ -652,6 +671,9 @@ function SnapshotTab() {
     try {
       await api.purgeSnapshot(id)
       setConfirmingId(null)
+      // 物理删除后刷新"接着想"面板：后端 Inspiration.delete() 已级联清理 saved_ai_replies，
+      // 前端需重新请求让面板即时移除被 purge 灵感的对话
+      useStore.getState().loadSavedReplies()
       loadSnapshots()
     } catch (err) {
       setError(err.message)
@@ -756,6 +778,45 @@ function SnapshotTab() {
           </div>
         )
       })}
+    </div>
+  )
+}
+
+// ============================================================
+// 关于 tab：使用指南 / GitHub / Issue / 版本号
+// 功能：提供应用信息与外部链接入口，点击通过 openExternalLink 打开
+// ============================================================
+function AboutTab() {
+  // 版本号由 Vite define 注入（读取根 package.json 的 version 字段）
+  const version = import.meta.env.VITE_APP_VERSION || '0.0.0'
+
+  // 链接列表：使用指南 PDF、GitHub 仓库、Issue 反馈
+  const links = [
+    { icon: BookOpen, label: '使用指南', desc: '点击打开 PDF 使用文档', url: './How2Use.pdf' },
+    { icon: Github, label: 'GitHub 仓库', desc: '查看源码、提 Issue、Star', url: 'https://github.com/AIRA-81920/AIRA-s-Diary' },
+    { icon: Bug, label: '提交 Issue', desc: '反馈 Bug 或建议功能', url: 'https://github.com/AIRA-81920/AIRA-s-Diary/issues' },
+  ]
+
+  return (
+    <div className="space-y-2">
+      {links.map((item) => (
+        <button
+          key={item.url}
+          type="button"
+          onClick={() => openExternalLink(item.url)}
+          className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-line/[0.06] hover:border-cyan-400/30 hover:bg-veil/[0.04] transition-all text-left group"
+        >
+          <item.icon size={18} className="text-ink/40 group-hover:text-cyan-400/70 transition-colors shrink-0" />
+          <div className="min-w-0">
+            <p className="text-sm text-ink/70 group-hover:text-ink/90 transition-colors">{item.label}</p>
+            <p className="text-xs text-ink/25 mt-0.5">{item.desc}</p>
+          </div>
+        </button>
+      ))}
+      {/* 版本号 */}
+      <div className="flex items-center justify-center px-4 py-6 mt-4">
+        <span className="text-ink/20 text-xs font-sans">AIRA's Diary  v{version}</span>
+      </div>
     </div>
   )
 }

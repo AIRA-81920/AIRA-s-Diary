@@ -630,6 +630,21 @@ export const CoalesceScanService = {
    * @throws {Error} NOT_FOUND / VALIDATION_FAILED
    */
   async curate(bridgeId, action) {
+    // delete 分支：物理删除已确认桥梁记录（前端"删除按钮"触发）
+    // 与 confirm/dismiss 不同：不再保留行，直接 DELETE
+    if (action === 'delete') {
+      const row = queryOne('SELECT * FROM coalesce_bridges WHERE id = ?', [bridgeId]);
+      if (!row) {
+        const e = new Error(`Bridge not found: ${bridgeId}`);
+        e.code = 'NOT_FOUND';
+        throw e;
+      }
+      db.run('DELETE FROM coalesce_bridges WHERE id = ?', [bridgeId]);
+      saveDb();
+      // 返回被删除的记录，供前端回滚使用
+      return this._formatBridge(row);
+    }
+
     if (action !== 'confirm' && action !== 'dismiss') {
       const e = new Error(`Invalid action: ${action}`);
       e.code = 'VALIDATION_FAILED';

@@ -15,9 +15,8 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-
-// 数据目录（从环境变量读取，默认 ./data）
-const DATA_DIR = process.env.DATA_DIR || './data';
+// Electron 打包路径适配：数据根统一走 paths
+import { resolveDataInspirationsDir } from '../config/paths.js';
 
 // 默认面板收起状态：三面板布局初始均为展开
 // M3 重命名：clarifyCollapsed → crystallizeCollapsed
@@ -27,15 +26,10 @@ const DEFAULT_PANEL_STATE = {
   rightCollapsed: false,        // 右侧融合面板（M3-e 后启用）
 };
 
-// 获取数据目录的绝对路径（基于 cwd，即 backend 目录）
-function getBasePath() {
-  return path.isAbsolute(DATA_DIR) ? DATA_DIR : path.resolve(process.cwd(), DATA_DIR);
-}
-
 // 返回指定灵感的存储文件夹路径
-// 实现：拼接 {DATA_DIR}/inspirations/{id}
+// 实现：拼接 {数据根}/inspirations/{id}（数据根由 paths 统一解析，打包后指向 %APPDATA%）
 export function getStoragePath(inspirationId) {
-  return path.join(getBasePath(), 'inspirations', inspirationId);
+  return path.join(resolveDataInspirationsDir(), inspirationId);
 }
 
 // 初始化灵感存储

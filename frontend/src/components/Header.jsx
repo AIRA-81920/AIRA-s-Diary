@@ -5,6 +5,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react'
 import { Plus, Network, Bookmark, Settings } from 'lucide-react'
 import useStore from '../services/store.js'
+import { openExternalLink } from '../services/openLink.js'
 import {
   LONG_PRESS_THRESHOLD,
   getShakeAmplitude,
@@ -111,8 +112,8 @@ function AIRAAvatar() {
           shakeRef.current.style.animation = 'none'
           shakeRef.current.style.setProperty('--shake-angle', '0deg')
         }
-        // 新标签页打开GitHub（Electron中需主进程处理 shell.openExternal）
-        window.open('https://github.com/AIRA-81920/AIRA-s-Diary', '_blank', 'noopener,noreferrer')
+        // 打开 GitHub（通过 openExternalLink 统一处理 Web/Electron 兼容）
+        openExternalLink('https://github.com/AIRA-81920/AIRA-s-Diary')
         rafRef.current = null
         return
       }
@@ -386,12 +387,12 @@ function Header({ onNewInspiration }) {
               type="button"
               onClick={openForceGraph}
               disabled={forceGraphLoading}
-              className="glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all group disabled:opacity-50"
+              className="glass-card gal-nav-btn gal-nav-purple flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all group disabled:opacity-50"
               title="查看灵感网络（力导向图总览）"
             >
               <Network
                 size={16}
-                className="transition-transform group-hover:scale-110"
+                className="transition-transform duration-300 group-hover:scale-110"
                 style={{ color: '#a855f7' }}
               />
               <span>灵感网络</span>
@@ -410,12 +411,12 @@ function Header({ onNewInspiration }) {
           <button
             type="button"
             onClick={openContinueThinking}
-            className="glass-card flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all group"
+            className="glass-card gal-nav-btn gal-nav-amber flex items-center gap-2 px-4 py-2.5 rounded-xl text-ink/70 hover:text-ink/95 text-sm font-medium transition-all group"
             title="查看搁置的思考（已保存的对话回答）"
           >
             <Bookmark
               size={16}
-              className="transition-transform group-hover:scale-110"
+              className="transition-transform duration-300 group-hover:scale-110"
               style={{ color: 'var(--accent-amber)' }}
             />
             <span>接着想{savedRepliesCount > 0 ? ` (${savedRepliesCount})` : ''}</span>

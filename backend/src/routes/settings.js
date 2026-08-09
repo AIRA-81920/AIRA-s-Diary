@@ -4,11 +4,13 @@ import path from 'path'
 import dotenv from 'dotenv'
 import OpenAI from 'openai'
 import { printModelConfig } from '../config/modelConfig.js'
+// Electron 打包路径适配：.env/.env.example 路径统一走 paths（打包后放 %APPDATA%，可写）
+import { resolveEnvPath, resolveEnvExamplePath } from '../config/paths.js'
 
 const router = express.Router()
 
-const ENV_PATH = path.resolve(process.cwd(), '.env')
-const ENV_EXAMPLE_PATH = path.resolve(process.cwd(), '.env.example')
+const ENV_PATH = resolveEnvPath()
+const ENV_EXAMPLE_PATH = resolveEnvExamplePath()
 
 function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {}

@@ -8,13 +8,15 @@ import fsp from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { BRIDGE_TYPE_KEY_MAP } from '../config/constants.js';
+// Electron 打包路径适配：数据库路径 / sql.js wasm 路径统一走 paths
+import { getDbPath, resolveDataInspirationsDir, resolveSqlJsDist } from '../config/paths.js';
 
 // 获取当前模块所在目录（ESM 下没有 __dirname，需手动构造）
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 数据库配置（从环境变量读取，提供默认值）
-const DB_PATH = process.env.DB_PATH || './data/inspireflow.db';
+// 数据库配置（从环境变量读取，提供默认值，打包后由 Electron 注入绝对路径）
+const DB_PATH = getDbPath();
 // schema.sql 文件路径（与 db.js 同目录）
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 
@@ -213,10 +215,7 @@ async function runMigrationV2Data(database) {
 
   // ===== 3. 重命名 data/inspirations/{id}/clarify/ → crystallize/ =====
   try {
-    const dataDir = process.env.DATA_DIR || './data';
-    const inspirationsDir = path.isAbsolute(dataDir)
-      ? path.join(dataDir, 'inspirations')
-      : path.resolve(process.cwd(), dataDir, 'inspirations');
+    const inspirationsDir = resolveDataInspirationsDir();
     if (fs.existsSync(inspirationsDir)) {
       const entries = await fsp.readdir(inspirationsDir, { withFileTypes: true });
       let renamedCount = 0;
@@ -257,7 +256,7 @@ async function runMigrationV2Data(database) {
 async function runMigrationV3Data(database) {
   // ===== 1. 迁移前自动备份 =====
   try {
-    const absPath = path.isAbsolute(DB_PATH) ? DB_PATH : path.resolve(process.cwd(), DB_PATH);
+    const absPath = getDbPath();
     const bakPath = `${absPath}.v2.bak`;
     if (fs.existsSync(absPath) && !fs.existsSync(bakPath)) {
       // 仅在备份不存在时创建，避免重复迁移时覆盖原始备份
@@ -404,15 +403,16 @@ async function runMigrationV3Data(database) {
 async function loadSqlJs() {
   const SQL = await initSqlJs({
     // locateFile：sql.js 内部请求 wasm 文件时回调，返回完整路径
-    locateFile: (file) => path.join(process.cwd(), 'node_modules', 'sql.js', 'dist', file),
+    // 打包后 SQLJS_DIST_DIR 指向 asarUnpack 解包后的外部目录，避免 wasm 进 asar 无法直接读
+    locateFile: (file) => path.join(resolveSqlJsDist(), file),
   });
   return SQL;
 }
 
 // 从磁盘读取已有数据库文件，返回 Uint8Array；文件不存在返回 null
 function readDbFile() {
-  // 将相对路径解析为绝对路径（基于 cwd，即 backend 目录）
-  const absPath = path.isAbsolute(DB_PATH) ? DB_PATH : path.resolve(process.cwd(), DB_PATH);
+  // getDbPath() 返回绝对路径（打包后由 env 注入，Web 开发由 paths 解析）
+  const absPath = getDbPath();
   if (fs.existsSync(absPath)) {
     // 读取二进制文件并返回 Buffer，sql.js 可直接接受 Uint8Array
     const buffer = fs.readFileSync(absPath);
@@ -428,7 +428,7 @@ export function saveDb() {
     console.warn('[DB] saveDb called but db is not initialized');
     return;
   }
-  const absPath = path.isAbsolute(DB_PATH) ? DB_PATH : path.resolve(process.cwd(), DB_PATH);
+  const absPath = getDbPath();
   // 确保目标目录存在
   const dir = path.dirname(absPath);
   if (!fs.existsSync(dir)) {

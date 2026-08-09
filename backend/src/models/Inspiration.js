@@ -145,6 +145,14 @@ export const Inspiration = {
     db.run('DELETE FROM coalesce_candidates WHERE inspiration_id_a = ? OR inspiration_id_b = ?', [id, id]);
     // Coalesce 桥梁（双向：bridges 表的 inspiration_id 与 inspiration_b_id）
     db.run('DELETE FROM coalesce_bridges WHERE inspiration_id = ? OR inspiration_b_id = ?', [id, id]);
+    // v7 关联数据级联清理（schema.sql 中 FK ON DELETE CASCADE 因 PRAGMA foreign_keys 未启用而失效，需手动删）
+    // 追加条目下的评论与已保存 AI 回答先删，再删追加条目本身
+    db.run('DELETE FROM addendum_comments WHERE addendum_id IN (SELECT id FROM inspiration_addenda WHERE inspiration_id = ?)', [id]);
+    db.run('DELETE FROM saved_ai_replies WHERE addendum_id IN (SELECT id FROM inspiration_addenda WHERE inspiration_id = ?)', [id]);
+    // saved_ai_replies 有冗余 inspiration_id 字段，删除未挂载在 addendum 下的残留行
+    db.run('DELETE FROM saved_ai_replies WHERE inspiration_id = ?', [id]);
+    // 追加条目主帖
+    db.run('DELETE FROM inspiration_addenda WHERE inspiration_id = ?', [id]);
     saveDb();
   },
 

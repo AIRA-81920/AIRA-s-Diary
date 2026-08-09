@@ -18,6 +18,8 @@ import path from 'path';
 import { db } from '../database/db.js';
 import { getOpenAIClient, withRetry, withTimeout, AGENT_TYPES } from './openai.js';
 import { getTemperature } from '../config/modelConfig.js';
+// Electron 打包路径适配：上传目录统一走 paths
+import { resolveNeoideaDir } from '../config/paths.js';
 
 // 日志前缀
 const LOG_PREFIX = '[DistillService]';
@@ -28,9 +30,9 @@ const DISTILL_MAX_RETRIES = 1;     // withRetry 自动重试 1 次（瞬时错�
 
 // 上传目录（新建灵感文件存放处）
 // 功能：返回 uploads/neoidea 的绝对路径，供 distillForInspiration 默认调用
-// 实现方式：path.resolve(process.cwd(), 'uploads/neoidea')
+// 实现方式：走 paths 统一解析（打包后由 env 注入 %APPDATA%）
 function getUploadsNeoideaDir() {
-  return path.resolve(process.cwd(), 'uploads/neoidea');
+  return resolveNeoideaDir();
 }
 
 // 系统提示词模板（v12 按需提炼改造）

@@ -15,7 +15,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import {
   Brain, Pencil, Trash2, Clock, FileText, X,
-  Sparkles, Link2, AlertCircle, Loader2, Check, Plus, ArrowRight,
+  Sparkles, Link2, AlertCircle, Loader2, Check, Plus,
   Lightbulb, CheckCircle2, BookOpen, RefreshCw, ChevronRight
 } from 'lucide-react'
 import { formatTime } from '../services/store.js'
@@ -199,10 +199,9 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   const expandedStage = useStore((s) => s.expandedStage)
   const setExpandedStage = useStore((s) => s.setExpandedStage)
 
-  // Coalesce actions（用于桥梁策展 + 转新灵感）
+  // Coalesce actions（用于桥梁策展 + 删除已确认桥梁）
   const scanCoalesce = useStore((s) => s.scanCoalesce)
   const curateBridge = useStore((s) => s.curateBridge)
-  const bridgeToInspiration = useStore((s) => s.bridgeToInspiration)
   const coalesceLoading = useStore((s) => s.coalesceLoading)
   const coalesceError = useStore((s) => s.coalesceError)
   const coalesceStage = useStore((s) => s.coalesceStage)
@@ -925,7 +924,6 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
               coalesceScanSummary={coalesceScanSummary}
               onScan={() => scanCoalesce(inspiration.id)}
               onCurate={(bridgeId, action) => curateBridge(inspiration.id, bridgeId, action)}
-              onToInspiration={(bridgeId) => bridgeToInspiration(bridgeId)}
             />
           </StageAccordion>
         </div>
@@ -948,7 +946,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
               const cState = badges.crystallize?.state || 'none'
               const cached = drawerCache[inspiration.id]
               const hasCrystallizeCache = cached?.kind === 'crystallize'
-              let label = '召唤结晶台'
+              let label = '结晶'
               if (hasCrystallizeCache) label = '接着干结晶'
               else if (cState === 'done') label = '重新结晶'
               return (
@@ -974,7 +972,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
               const cached = drawerCache[inspiration.id]
               const hasEpitaxyCache = cached?.kind === 'epitaxy'
 
-              let label = '召唤外延台'
+              let label = '外延'
               if (hasEpitaxyCache) label = '接着干外延'
               else if (eState === 'distilled' || eState === 'excavated') label = '重新外延'
 
@@ -1197,7 +1195,7 @@ function CrystallizeArchiveContent({ crystal, inspirationType }) {
   if (!crystal || !crystal.fields || Object.keys(crystal.fields).length === 0) {
     return (
       <p className="text-ink/30 text-sm font-sans italic">
-        尚未结晶。点击下方"召唤结晶台"开始结构化提炼。
+        尚未结晶。点击下方"结晶"开始结构化提炼。
       </p>
     )
   }
@@ -1610,7 +1608,7 @@ function EpitaxyArchiveContent({ proposals, chunkCount }) {
 function CoalesceArchiveContent({
   inspiration, bridges, activeBridges, dismissedBridges,
   fingerprintStale, coalesceStage, coalesceLoading, coalesceError,
-  coalesceScanSummary, onScan, onCurate, onToInspiration
+  coalesceScanSummary, onScan, onCurate
 }) {
   // 扫描完成但无新桥梁时显示提示（让用户知道扫描确实执行了，不是没反应）
   const showNoNewBridges = coalesceStage === 'done' && coalesceScanSummary
@@ -1684,7 +1682,6 @@ function CoalesceArchiveContent({
               bridge={bridge}
               currentInspirationId={inspiration.id}
               onCurate={onCurate}
-              onToInspiration={onToInspiration}
             />
           ))}
           {/* 已忽略桥梁（置灰归档区） */}
@@ -1697,7 +1694,6 @@ function CoalesceArchiveContent({
                   bridge={bridge}
                   currentInspirationId={inspiration.id}
                   onCurate={onCurate}
-                  onToInspiration={onToInspiration}
                   dismissed
                 />
               ))}
@@ -1711,15 +1707,26 @@ function CoalesceArchiveContent({
 
 /**
  * 桥梁卡片
- * 功能：展示单条桥梁 + 策展按钮 + 转新灵感
+ * 功能：展示单条桥梁 + 策展按钮 + 删除按钮（已确认桥梁）
+ * 改造说明：原"转新灵感"按钮已移除（后端 bridgeToInspiration 仅复制 reason 原文，无提炼价值）
+ *           替换为删除按钮，让用户可在确认后撤销桥梁；保留后端 to-inspiration 链路以备后续增强
  */
-function BridgeCard({ bridge, currentInspirationId, onCurate, onToInspiration, dismissed = false }) {
+function BridgeCard({ bridge, currentInspirationId, onCurate, dismissed = false }) {
   const color = BRIDGE_COLORS[bridge.bridgeType] || '#888'
   const label = BRIDGE_LABELS[bridge.bridgeType] || bridge.bridgeType
   // 显示另一端灵感 ID（当前灵感可能是 A 或 B）
   const otherId = bridge.inspirationAId === currentInspirationId
     ? bridge.inspirationBId
     : bridge.inspirationAId
+  // 删除二次确认状态：第一次点击进入确认态，3 秒后自动退出（与 AddendumSection 一致）
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
+
+  // 确认态 3 秒后自动退出，避免用户误点后停留在危险态
+  useEffect(() => {
+    if (!confirmingDelete) return
+    const t = setTimeout(() => setConfirmingDelete(false), 3000)
+    return () => clearTimeout(t)
+  }, [confirmingDelete])
 
   return (
     <div
@@ -1797,21 +1804,26 @@ function BridgeCard({ bridge, currentInspirationId, onCurate, onToInspiration, d
         </div>
       )}
 
-      {/* 已确认桥梁：转新灵感按钮 */}
+      {/* 已确认桥梁：删除按钮（内联二次确认，与 AddendumSection 删除交互一致） */}
       {bridge.status === 'confirmed' && (
         <button
           type="button"
-          onClick={() => onToInspiration(bridge.id)}
-          className="glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all mt-2"
-          style={{
-            background: 'rgb(var(--cyan-bright-rgb) / 0.1)',
-            color: 'var(--accent-cyan-bright)',
-            border: '1px solid rgb(var(--cyan-bright-rgb) / 0.2)'
+          onClick={() => {
+            if (confirmingDelete) {
+              onCurate(bridge.id, 'delete')
+            } else {
+              setConfirmingDelete(true)
+            }
           }}
+          className={`glow-btn flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-sans transition-all mt-2 ${
+            confirmingDelete
+              ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+              : 'text-ink/30 hover:text-red-400 hover:bg-red-500/10 border border-ink/5'
+          }`}
+          title={confirmingDelete ? '再次点击确认删除' : '删除这条桥梁'}
         >
-          <Plus size={10} />
-          <span>转新灵感</span>
-          <ArrowRight size={10} />
+          <Trash2 size={10} />
+          <span>{confirmingDelete ? '确认删除?' : '删除'}</span>
         </button>
       )}
     </div>

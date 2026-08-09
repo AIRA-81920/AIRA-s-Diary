@@ -8,6 +8,8 @@ import Inspiration from '../models/Inspiration.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
+// Electron 打包路径适配：灵感数据目录统一走 paths
+import { resolveDataInspirationsDir } from '../config/paths.js';
 
 // LLM 单次调用超时（毫秒）：120s。deepseek 端点高峰可到 60-90s，120s 是宽松上限；
 // 超过则抛错由上层 catch 转成可见错误，避免请求无限挂起（fix：原无超时控制）
@@ -56,8 +58,7 @@ class BaseAgent {
   // 功能：在 inspirations/{id}/{subDir}/ 下写入 {timestamp}_{uuid}.json
   // 实现方式：fs.mkdir recursive 创建子目录，文件名含时间戳与短 uuid 保证唯一且可按时间排序
   async saveResult(inspirationId, subDir, data) {
-    const dataDir = process.env.DATA_DIR || './data';
-    const dir = path.join(dataDir, 'inspirations', inspirationId, subDir);
+    const dir = path.join(resolveDataInspirationsDir(), inspirationId, subDir);
     await fs.mkdir(dir, { recursive: true });
     // 时间戳中的 : 与 . 替换为 -，保证文件名合法
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');

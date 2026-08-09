@@ -17,6 +17,11 @@ node_modules/
 # ---------- 构建产物 ----------
 frontend/dist/
 **/dist/
+# electron-builder 打包产物（nsis 安装包 + win-unpacked 目录）
+release/
+release-build/
+release-final/
+release_old/
 
 # ---------- 运行时数据 ----------
 # SQLite 数据库与用户灵感数据

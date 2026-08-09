@@ -132,15 +132,6 @@ function InspirationModal({ inspiration, onSave, onClose }) {
   }
 
   /**
-   * v12：DropZone onImages 回调
-   * 功能：新建灵感仅支持文本文件（.md/.txt），拖入图片时显示错误提示
-   * 实现方式：setErrorMsg 提示用户（图片在追加弹窗中才支持，新建灵感不做识图流程）
-   */
-  const handleImagesDrop = () => {
-    setErrorMsg('仅支持文本文件（.md/.txt），不支持图片')
-  }
-
-  /**
    * v11：移除某个待上传文件
    * @param {number} idx - pendingFiles 中的索引
    */
@@ -243,12 +234,13 @@ function InspirationModal({ inspiration, onSave, onClose }) {
     // DropZone 包裹整个弹窗作为 children（v12 改造）：
     //   - active={isCreateMode}：新建模式下始终激活拖放（拖入即上传，无需手动选择"文件"来源）
     //   - existingType：已有文本文件时锁定 'file'（拒绝图片混入）；空时接受任何类型按首类锁定
-    //   - onFiles/onImages 回调处理拖入的文件
+    //   - acceptedType="file"：只接受文本文件，拖入图片时浮窗完全不显示
+    //   - onFiles 回调处理拖入的文本文件
     <DropZone
       active={isCreateMode}
       existingType={showFileZone ? 'file' : null}
+      acceptedType="file"
       onFiles={handleFilesDrop}
-      onImages={handleImagesDrop}
     >
       {/* 遮罩层：深色 + backdrop-blur，点击关闭 */}
       <div
@@ -301,7 +293,7 @@ function InspirationModal({ inspiration, onSave, onClose }) {
                 type="text"
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder={distillEnabled && !title.trim() ? '将由 AI 提炼标题...' : '给这个灵感起个名字...'}
+                placeholder={distillEnabled && !title.trim() ? '将由 AI 提炼标题...' : '起个名字？'}
                 autoFocus
                 disabled={distillEnabled && !title.trim()}
                 className={`input-accent w-full px-4 py-2.5 rounded-xl text-sm text-ink/80 placeholder-ink/25 font-sans ${distillEnabled && !title.trim() ? 'opacity-60 cursor-not-allowed' : ''}`}
@@ -316,7 +308,7 @@ function InspirationModal({ inspiration, onSave, onClose }) {
               <AutoTextArea
                 value={content}
                 onChange={(v) => setContent(v)}
-                placeholder={distillEnabled && !content.trim() ? '将由 AI 提炼内容...' : '详细描述你的灵感...'}
+                placeholder={distillEnabled && !content.trim() ? '将由 AI 提炼内容...' : '详细描述你的想法...'}
                 disabled={distillEnabled && !content.trim()}
                 minRows={6}
                 maxHeight={400}

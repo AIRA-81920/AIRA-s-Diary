@@ -310,6 +310,9 @@ const useStore = create((set, get) => ({
         get().clearDrawerCache(id)
         // v12：软删除后刷新文件夹计数（该灵感已离开所属文件夹的活跃数量）
         get().loadFolders()
+        // 刷新"接着想"面板缓存：软删除后后端 listSavedRepliesForFeed 会过滤掉该灵感的 saved replies，
+        // 前端需重新请求才能让面板即时移除已删灵感的对话（后端已有 deleted_at IS NULL 过滤）
+        get().loadSavedReplies()
         // K3-g：若删除的是当前选中灵感，重置所有阶段状态（防止新建灵感继承）
         if (wasSelected) {
           get().resetCrystallize()
@@ -1401,11 +1404,16 @@ const useStore = create((set, get) => ({
     if (!bridgeId || !action) return
     // 乐观更新本地状态
     const prevBridges = get().coalesceBridges
-    set({
-      coalesceBridges: prevBridges.map(b =>
-        b.id === bridgeId ? { ...b, status: action === 'confirm' ? 'confirmed' : 'dismissed' } : b
-      )
-    })
+    if (action === 'delete') {
+      // delete：从列表移除（与 confirm/dismiss 的改 status 不同）
+      set({ coalesceBridges: prevBridges.filter(b => b.id !== bridgeId) })
+    } else {
+      set({
+        coalesceBridges: prevBridges.map(b =>
+          b.id === bridgeId ? { ...b, status: action === 'confirm' ? 'confirmed' : 'dismissed' } : b
+        )
+      })
+    }
     try {
       const result = await api.curateBridge(bridgeId, action)
       if (result.success === false) {

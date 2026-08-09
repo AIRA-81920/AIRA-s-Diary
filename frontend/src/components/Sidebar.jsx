@@ -6,6 +6,7 @@
 //   - 合并：拖拽灵感到另一散灵感上悬停 500ms → 创建文件夹
 import React, { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
+import { openExternalLink } from '../services/openLink.js'
 import {
   DndContext,
   PointerSensor,
@@ -811,6 +812,14 @@ function Sidebar({
             <Brain size={40} className="text-ink/10 mb-4" strokeWidth={1.2} />
             <p className="font-display text-ink/40 text-lg italic">还没有灵感</p>
             <p className="text-ink/25 text-xs mt-2 font-sans">点击右上角新建第一个灵感</p>
+            {/* 使用指南入口：仅在完全无灵感时显示，点击在新标签页打开 PDF */}
+            <button
+              type="button"
+              onClick={() => openExternalLink('./How2Use.pdf')}
+              className="text-cyan-400/50 hover:text-cyan-400 text-xs mt-3 font-sans transition-colors"
+            >
+              使用指南 →
+            </button>
           </div>
         ) : (
           <DndContext

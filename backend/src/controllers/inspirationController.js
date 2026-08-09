@@ -9,9 +9,11 @@ import inspirationStorage from '../services/inspirationStorage.js';
 import TaskQueue, { TASK_KINDS } from '../services/taskQueue.js';
 import { db, saveDb } from '../database/db.js';
 import { computeDistillMode } from '../services/distillService.js';
+// Electron 打包路径适配：新建灵感源文件目录统一走 paths
+import { resolveNeoideaDir } from '../config/paths.js';
 
 // 新建灵感源文件的物理存储目录（与 addendumController uploadFiles storage 一致）
-const NEOIDEA_DIR = path.resolve(process.cwd(), 'uploads/neoidea');
+const NEOIDEA_DIR = resolveNeoideaDir();
 
 // 塑形灵感响应对象（v11 多模态扩展）
 // 功能：解析 source_files_json → source_files 字段，整型字段强制转 Number（SQL.js 可能返回字符串）

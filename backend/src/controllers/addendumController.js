@@ -28,11 +28,13 @@ import { v4 as uuidv4 } from 'uuid';
 // 约束禁止修改 addendumService.js（任务 7 已完成），而 service.getAddendumById 的 SELECT 未包含 files_json 列
 // 因此 controller 内直接 import db 做最小内联查询，仅查 files_json 一列
 import { db } from '../database/db.js';
+// Electron 打包路径适配：上传目录统一走 paths
+import { resolveAddendaDir, resolveNeoideaDir } from '../config/paths.js';
 
 // ===== multer 图片上传配置 =====
 // 功能：处理追加主帖附带的图片上传，限制大小与扩展名，文件名用 UUID 防路径穿越
-// 实现：dest 指向项目根目录下 uploads/addenda/，filename 用 uuid + 原始扩展名
-const uploadsDir = path.resolve(process.cwd(), 'uploads', 'addenda');
+// 实现：dest 指向 uploads/addenda/（打包后由 env 注入 %APPDATA%）
+const uploadsDir = resolveAddendaDir();
 // 启动时确保上传目录存在（recursive 保证幂等）
 fs.mkdirSync(uploadsDir, { recursive: true });
 
@@ -74,9 +76,9 @@ export const upload = multer({
 // 实现：两套 storage 共用 fileFilter，dest 分别指向 uploads/addenda/ 与 uploads/neoidea/
 //       文件名 UUID + 原扩展名，杜绝路径穿越与命名冲突
 
-// 新建灵感文件存储目录：uploads/neoidea/
+// 新建灵感文件存储目录：uploads/neoidea/（打包后由 env 注入 %APPDATA%）
 // 启动时确保目录存在（recursive 保证幂等，与 uploads/addenda 创建方式一致）
-const neoideaUploadsDir = path.resolve(process.cwd(), 'uploads', 'neoidea');
+const neoideaUploadsDir = resolveNeoideaDir();
 fs.mkdirSync(neoideaUploadsDir, { recursive: true });
 
 // 文本文件大小上限：500KB

@@ -23,12 +23,14 @@ import path from 'path';
 import { getOpenAIClient, withRetry, withTimeout, AGENT_TYPES } from './openai.js';
 import { getTemperature } from '../config/modelConfig.js';
 import { LLM_LIMITS } from '../config/constants.js';
+// Electron 打包路径适配：上传目录统一走 paths
+import { resolveAddendaDir } from '../config/paths.js';
 
 // 日志前缀（项目惯例：[ServiceName]）
 const LOG_PREFIX = '[VisionService]';
 
-// 追加图片上传目录（与 addendumController.js 保持一致：uploads/addenda/）
-const UPLOADS_ADDENDA_DIR = path.resolve(process.cwd(), 'uploads', 'addenda');
+// 追加图片上传目录（与 addendumController.js 保持一致：uploads/addenda/，打包后由 env 注入 %APPDATA%）
+const UPLOADS_ADDENDA_DIR = resolveAddendaDir();
 
 // ===== systemPrompt（需求文档 7.8.1，单一来源，禁止散落）=====
 // 功能：约束 LLM 客观描述图片，分类处理环境图/文本图，强制中文输出；

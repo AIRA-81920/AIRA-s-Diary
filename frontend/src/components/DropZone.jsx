@@ -66,11 +66,13 @@ function detectTypeFromItems(items) {
  * @param {object} props
  * @param {boolean} props.active - 是否激活拖放区（父组件控制，例如弹窗打开时为 true）
  * @param {'image'|'file'|null} props.existingType - 当前已有文件类型，null 表示空，允许任何类型
+ * @param {'image'|'file'|null} [props.acceptedType=null] - 限制只接受的文件类型，null 表示图片和文本都接受；
+ *        'file' 时拖入纯图片/混合类型不显示浮窗，drop 时静默过滤图片只取文本；'image' 为反向对称
  * @param {(files: File[]) => void} [props.onImages] - 图片文件回调
  * @param {(files: File[]) => void} [props.onFiles] - 文本文件回调
  * @param {React.ReactNode} [props.children] - 父组件渲染内容，DropZone 作为 overlay 覆盖其上
  */
-function DropZone({ active, existingType, onImages, onFiles, children }) {
+function DropZone({ active, existingType, acceptedType = null, onImages, onFiles, children }) {
   // 是否显示浮窗（dragenter 后 true，drop/dragleave 后 false）
   const [isDragging, setIsDragging] = useState(false)
   // 当前拖入文件类型（dragover 阶段探测，用于动态文案）
@@ -84,9 +86,9 @@ function DropZone({ active, existingType, onImages, onFiles, children }) {
 
   // 用 ref 同步最新的 props/state 给 document 级事件 handler，避免闭包陷阱
   // 这样 useEffect 只需依赖 active 即可，事件不会因 existingType/回调变化而频繁重绑
-  const ctxRef = useRef({ existingType, onImages, onFiles })
+  const ctxRef = useRef({ existingType, acceptedType, onImages, onFiles })
   useEffect(() => {
-    ctxRef.current = { existingType, onImages, onFiles }
+    ctxRef.current = { existingType, acceptedType, onImages, onFiles }
   })
 
   // 组件卸载时清理 timer，避免内存泄漏
@@ -123,6 +125,12 @@ function DropZone({ active, existingType, onImages, onFiles, children }) {
       }
       setPinnedMsg(null)
       const t = detectTypeFromItems(e.dataTransfer.items)
+      // acceptedType 限制：只接受文本时拖入纯图片/混合类型不显示浮窗；只接受图片时反向对称
+      // unknown 类型仍显示（让 drop 时按扩展名精确判断），null 也显示
+      const { acceptedType: at } = ctxRef.current
+      const rejected = (at === 'file' && (t === 'image' || t === 'mixed'))
+                    || (at === 'image' && (t === 'file' || t === 'mixed'))
+      if (rejected) return  // 不显示浮窗，dragCounter 已计数，dragleave 仍能正常配对递减
       setCurrentType(t)
       setIsDragging(true)
     }
@@ -163,13 +171,18 @@ function DropZone({ active, existingType, onImages, onFiles, children }) {
         return
       }
 
-      // 取最新的 existingType / 回调（ref 同步）
-      const { existingType: et, onImages: oi, onFiles: of_ } = ctxRef.current
+      // 取最新的 existingType / 回调 / acceptedType（ref 同步）
+      const { existingType: et, acceptedType: at, onImages: oi, onFiles: of_ } = ctxRef.current
 
       // 对每个文件做精确分类
       const classified = files.map((f) => ({ file: f, type: classifyFile(f) }))
-      const images = classified.filter((c) => c.type === 'image').map((c) => c.file)
-      const texts = classified.filter((c) => c.type === 'file').map((c) => c.file)
+      const originalImages = classified.filter((c) => c.type === 'image').map((c) => c.file)
+      const originalTexts = classified.filter((c) => c.type === 'file').map((c) => c.file)
+      // acceptedType 限制：过滤掉不被接受的类型（静默忽略，不提示）
+      let images = originalImages
+      let texts = originalTexts
+      if (at === 'file') images = []
+      if (at === 'image') texts = []
 
       // 浮窗延迟隐藏：保留 pinnedMsg 一段时间让用户看到提示
       const closeAfter = (delay) => {
@@ -189,6 +202,12 @@ function DropZone({ active, existingType, onImages, onFiles, children }) {
 
       // 1. 全部不支持
       if (images.length === 0 && texts.length === 0) {
+        // 被 acceptedType 过滤掉（如只接受文本但拖入纯图片）→ 静默关闭，不提示
+        if ((at === 'file' && originalImages.length > 0) || (at === 'image' && originalTexts.length > 0)) {
+          closeNow()
+          return
+        }
+        // 真正不支持的文件类型（如 .pdf）→ 显示提示
         setPinnedMsg('不支持的文件类型')
         closeAfter(1500)
         return

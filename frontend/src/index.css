@@ -205,6 +205,53 @@ h4 {
     border-color: var(--border-glass-hover);
   }
 
+  /* Header 导航按钮（灵感网络/接着想）：Uiverse 风格悬停铺色
+     与 .gal-edit-btn 同源的交互语言——hover 时背景铺满强调色、
+     毛玻璃提亮、边框增亮、文字转白、图标轻微放大 */
+  .gal-nav-btn {
+    transition: border-color 0.3s ease, background 0.3s ease,
+                box-shadow 0.3s ease, transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .gal-nav-btn:hover {
+    transform: translateY(-1px);
+  }
+
+  /* 灵感网络：悬停铺紫色实底（与 network 图标 #a855f7 同源） */
+  .gal-nav-purple:hover {
+    border-color: rgb(168 85 247 / 0.55);
+    background: rgb(168 85 247 / 0.14);
+    box-shadow: 0 4px 20px rgb(168 85 247 / 0.28), inset 0 0 0 1px rgb(168 85 247 / 0.12);
+    color: var(--sem-purple, #c084fc);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  .gal-nav-purple:hover svg {
+    filter: drop-shadow(0 0 6px rgb(168 85 247 / 0.7));
+  }
+
+  /* 接着想：悬停铺琥珀实底（与 Bookmark 图标 accent-amber 同源） */
+  .gal-nav-amber:hover {
+    border-color: rgb(var(--accent-amber) / 0.5);
+    background: var(--accent-amber-soft);
+    box-shadow: 0 4px 20px rgb(245 158 11 / 0.24), inset 0 0 0 1px rgb(245 158 11 / 0.1);
+    color: var(--accent-amber-bright, #f6c453);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  .gal-nav-amber:hover svg {
+    filter: drop-shadow(0 0 6px rgb(245 158 11 / 0.65));
+  }
+
+  /* 亮色主题：悬停铺色需去掉毛玻璃（与 .glass-card 亮色处理一致） */
+  :root[data-theme='light'] .gal-nav-purple:hover,
+  :root[data-theme='light'] .gal-nav-amber:hover {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
   .glass-panel {
     background: rgb(var(--deep-rgb) / 0.6);
     backdrop-filter: blur(20px);
