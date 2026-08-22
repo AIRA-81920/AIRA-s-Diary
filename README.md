@@ -83,7 +83,7 @@ AIRA's Diary/
 - 解压后编辑 `backend/.env.example` 为 `backend/.env`，填入 API Key
 - 双击 `Start.bat` 即可启动
 
-###百度网盘
+### 百度网盘
 https://pan.baidu.com/wap/init?surl=qqAj35rV7VCYdgJguv8DzA&pwd=AIRA
 
 ### 从源码运行
