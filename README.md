@@ -82,7 +82,8 @@ AIRA's Diary/
 - **已内置 embedding 模型**（Xenova/paraphrase-multilingual-MiniLM-L12-v2，ONNX 量化版，约 113MB），无需联网下载
 - 解压后编辑 `backend/.env.example` 为 `backend/.env`，填入 API Key
 - 双击 `Start.bat` 即可启动
-##百度网盘
+
+###百度网盘
 https://pan.baidu.com/wap/init?surl=qqAj35rV7VCYdgJguv8DzA&pwd=AIRA
 
 ### 从源码运行
