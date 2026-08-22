@@ -89,7 +89,7 @@ https://pan.baidu.com/wap/init?surl=qqAj35rV7VCYdgJguv8DzA&pwd=AIRA
 ### 从源码运行
 
 ```bash
-git clone https://github.com/<username>/airas-diary.git
+git clone https://github.com/AIRA-81920/airas-diary.git
 cd airas-diary
 npm install
 cd backend
