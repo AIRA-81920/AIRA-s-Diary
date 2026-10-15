@@ -30,6 +30,30 @@ import { v4 as uuidv4 } from 'uuid';
 import { db } from '../database/db.js';
 // Electron 打包路径适配：上传目录统一走 paths
 import { resolveAddendaDir, resolveNeoideaDir } from '../config/paths.js';
+// 安全加固（SEC-007/SEC-008）：上传文件名白名单（本服务生成的 UUID 文件名），
+//   杜绝 body 可控 filename（../../../x）造成的任意文件删除 / 任意文件读取外发 LLM
+import { isSafeUploadFilename } from '../utils/security.js';
+
+// 校验 images/files 数组中的 filename 是否全部为本服务生成的 UUID 文件名
+// 功能：写入侧（createAddendum/updateAddendum）与删除侧（deleteAddendum）统一校验
+// 实现：不合法的条目直接拒绝整个请求（400），避免脏数据入库后被删除/读取路径利用
+function validateAttachmentFilenames(images, files) {
+  if (Array.isArray(images)) {
+    for (const img of images) {
+      if (img && img.filename && !isSafeUploadFilename(img.filename)) {
+        return `非法图片文件名：${String(img.filename).slice(0, 80)}`;
+      }
+    }
+  }
+  if (Array.isArray(files)) {
+    for (const f of files) {
+      if (f && f.filename && !isSafeUploadFilename(f.filename)) {
+        return `非法文件文件名：${String(f.filename).slice(0, 80)}`;
+      }
+    }
+  }
+  return null;
+}
 
 // ===== multer 图片上传配置 =====
 // 功能：处理追加主帖附带的图片上传，限制大小与扩展名，文件名用 UUID 防路径穿越
@@ -178,6 +202,11 @@ export async function createAddendum(req, res) {
     if (Array.isArray(images) && images.length > 0 && Array.isArray(files) && files.length > 0) {
       return res.status(400).json({ success: false, error: '图片与文本文件不可同时存在于同一追加条目' });
     }
+    // 文件名白名单校验（SEC-007/008 写入侧）：拒绝 body 可控的非法 filename 入库
+    const filenameErr = validateAttachmentFilenames(images, files);
+    if (filenameErr) {
+      return res.status(400).json({ success: false, error: filenameErr });
+    }
     // 调 service 写入 DB，透传 images 与 files（service 内部转 JSON 字符串存储）
     const result = addendumService.createAddendum(id, { content, links, images, files });
     // 扫描 images 中 status='generating' 的条目，入队 VISION 任务
@@ -200,7 +229,7 @@ export async function createAddendum(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] createAddendum failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -225,6 +254,11 @@ export async function updateAddendum(req, res) {
     if (Array.isArray(images) && images.length > 0 && Array.isArray(files) && files.length > 0) {
       return res.status(400).json({ success: false, error: '图片与文本文件不可同时存在于同一追加条目' });
     }
+    // 文件名白名单校验（SEC-007/008 写入侧）：拒绝 body 可控的非法 filename 入库
+    const filenameErr = validateAttachmentFilenames(images, files);
+    if (filenameErr) {
+      return res.status(400).json({ success: false, error: filenameErr });
+    }
     // 调 service 更新，透传 images 与 files（service 内部转 JSON 字符串存储）
     const result = addendumService.updateAddendum(addendumId, { content, links, images, files });
     // 扫描 images 中 status='generating' 的条目，入队 VISION 任务
@@ -246,7 +280,7 @@ export async function updateAddendum(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] updateAddendum failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -292,9 +326,14 @@ export async function deleteAddendum(req, res) {
     const result = addendumService.deleteAddendum(addendumId);
     // 级联删除 uploads/addenda/ 下的图片与文本文件
     // 实现：逐个 fs.unlinkSync，try/catch 不阻塞，文件不存在跳过
+    // 安全（SEC-007 删除侧）：文件名必须命中 UUID 白名单才允许 unlink，
+    //   历史脏数据（旧版本写入的非法 filename）一律跳过，绝不拼路径
     for (const img of imagesToDelete) {
       const filename = img?.filename;
-      if (!filename) continue;
+      if (!filename || !isSafeUploadFilename(filename)) {
+        console.debug(`[AddendumController] unlink image skipped (unsafe or missing filename):`, filename);
+        continue;
+      }
       try {
         fs.unlinkSync(path.join(uploadsDir, filename));
       } catch (err) {
@@ -304,7 +343,10 @@ export async function deleteAddendum(req, res) {
     }
     for (const f of filesToDelete) {
       const filename = f?.filename;
-      if (!filename) continue;
+      if (!filename || !isSafeUploadFilename(filename)) {
+        console.debug(`[AddendumController] unlink file skipped (unsafe or missing filename):`, filename);
+        continue;
+      }
       try {
         fs.unlinkSync(path.join(uploadsDir, filename));
       } catch (err) {
@@ -318,7 +360,7 @@ export async function deleteAddendum(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteAddendum failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -334,7 +376,7 @@ export async function listAddenda(req, res) {
     res.json({ success: true, data });
   } catch (e) {
     console.error('[AddendumController] listAddenda failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -356,7 +398,7 @@ export async function createComment(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] createComment failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -377,7 +419,7 @@ export async function updateComment(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] updateComment failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -392,7 +434,7 @@ export async function deleteComment(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteComment failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -415,7 +457,7 @@ export async function saveReply(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] saveReply failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -430,7 +472,7 @@ export async function deleteReply(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] deleteReply failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -451,7 +493,7 @@ export async function markConverted(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[AddendumController] markConverted failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -466,7 +508,7 @@ export async function listAllSavedReplies(req, res) {
     res.json({ success: true, data });
   } catch (e) {
     console.error('[AddendumController] listAllSavedReplies failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -484,7 +526,7 @@ export async function uploadImage(req, res) {
     res.json({ success: true, data: { filename: req.file.filename } });
   } catch (e) {
     console.error('[AddendumController] uploadImage failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -513,7 +555,7 @@ export async function uploadAddendumFile(req, res) {
     });
   } catch (e) {
     console.error('[AddendumController] uploadAddendumFile failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -540,6 +582,6 @@ export async function uploadInspirationFiles(req, res) {
     res.json({ success: true, data });
   } catch (e) {
     console.error('[AddendumController] uploadInspirationFiles failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }

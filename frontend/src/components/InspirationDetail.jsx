@@ -25,6 +25,7 @@ import { getInspiration, getInspirationFileContent } from '../services/api.js'
 import StageBadge from './StageBadge.jsx'
 import StageAccordion from './StageAccordion.jsx'
 import AddendumSection from './AddendumSection.jsx'
+import AssimilatePanel from './AssimilatePanel.jsx'
 // v11 多模态扩展：自适应高度 textarea（content 编辑框）
 import AutoTextArea from './AutoTextArea.jsx'
 // K3-g：fragment_type 元信息单一来源（R9 防前后端枚举漂移）
@@ -134,7 +135,24 @@ const CRYSTAL_FIELD_LABELS = {
   core_idea: '想法核心',
   trigger: '触发情境',
   desired_form: '希望形态',
-  next_step: '后续打算'
+  next_step: '后续打算',
+  // 前后端字段对齐补齐（并集：后端 TYPE_BRANCHES 的 baseFields / dynamicFields）
+  content: '内容',
+  tags: '标签',
+  medium: '媒介',
+  style_refs: '风格参考',
+  technique: '表现手法',
+  core_question: '核心问题',
+  known_boundary: '已知边界',
+  unknown_direction: '未知方向',
+  method: '研究方法',
+  expected_output: '预期产出',
+  archetype: '角色原型',
+  flaw: '弱点缺陷',
+  relationships: '关键关系',
+  mannerisms: '标志性举止',
+  // 概念融合（concept_map 走完后沉淀到 crystal 的 metaField）
+  fusion: '概念融合'
 }
 
 /**
@@ -323,7 +341,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   // 未选中灵感：显示空状态（大型 Brain 图标 + 衬线哲学提示）
   if (!inspiration) {
     return (
-      <main className="flex-1 flex flex-col items-center justify-center px-8">
+      <main id="inspiration-detail" className="flex-1 flex flex-col items-center justify-center px-8">
         <div className="text-center animate-fade-in-up">
           {/* 大型 Brain 图标：极淡 + 微脉动 */}
           <div className="relative inline-block mb-6">
@@ -484,7 +502,7 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
   return (
     // 详情主区域：可纵向滚动
     // UI 精修：insp-themed 让该灵感下的发光组件跟随灵感类型色（--insp-glow 由 Workspace 注入）
-    <main className="insp-themed flex-1 flex flex-col overflow-y-auto">
+    <main id="inspiration-detail" className="insp-themed flex-1 flex flex-col overflow-y-auto">
       {/* 顶部操作栏：叉号返回 + 编辑 + 删除按钮 */}
       <div className="flex items-center justify-between gap-2 px-10 py-4 border-b border-line/5">
         {/* 左侧：返回初始状态的叉号按钮 */}
@@ -840,6 +858,9 @@ function InspirationDetail({ inspiration, onEdit, onDelete, onDeselect }) {
 
         {/* ========== 追加思考（时间线日志）========== */}
         <AddendumSection inspirationId={inspiration.id} />
+
+        {/* ========== 消化入口（C 方案：把新内容消化回核心定义）========== */}
+        {crystal && <AssimilatePanel inspirationId={inspiration.id} />}
 
         {/* ========== 三阶段档案馆（手风琴渐进展示）==========
             K4-b 改进点 1：当 drawer='epitaxy' 时切换为外延联动视图
@@ -1248,7 +1269,8 @@ function CrystallizeArchiveContent({ crystal, inspirationType }) {
   // K4 新增：动态字段渲染（跳过元字段，元字段在独立区块渲染）
   // 元字段列表：composable_with / follow_up_questions / _supplement / archetype / detected_capsule / selected_dimensions
   // fix6 新增：evolution（概念的演化方向，LLM 推断）
-  const META_FIELD_KEYS = ['composable_with', 'follow_up_questions', '_supplement', 'archetype', 'detected_capsule', 'selected_dimensions', 'evolution', 'concept_type']
+  // 概念地图新增：fusion（概念融合结论，LLM 推断，由 renderMetaFields 独立渲染）
+  const META_FIELD_KEYS = ['composable_with', 'follow_up_questions', '_supplement', 'archetype', 'detected_capsule', 'selected_dimensions', 'evolution', 'concept_type', 'fusion']
   const renderFields = () => {
     const fields = crystal.fields || {}
     return Object.entries(fields)
@@ -1443,7 +1465,55 @@ function CrystallizeArchiveContent({ crystal, inspirationType }) {
             )}
           </div>
         )}
+      {/* 注：fusion（概念融合）不在此渲染——已移出为 renderFusion()，提到 renderFields() 之前 */}
       </>
+    )
+  }
+
+  // 概念融合结论独立渲染（张力对改造：从 renderMetaFields 移出，仅渲染一次并提到最前）
+  // 来源：概念地图走完后的融合题结论，由后端沉淀到 crystal 的 metaField
+  // 形态兼容：对象 { of, name, line, insight }（新）或字符串（兜底）
+  // 展示口径：两端名优先取代码补齐的 fusion.name（缺失才回退 of 拼接），line 以弱化小字显示在 insight 之上
+  const renderFusion = () => {
+    const fusion = crystal.fields?.fusion
+    if (!fusion) return null
+    return (
+      <div className="mt-4 pt-3 border-t border-line/5">
+        <p className="text-ink/40 text-[11px] uppercase tracking-wider font-sans mb-2">概念融合（AI 推断）</p>
+        {(() => {
+          // 对象形态：展示两端概念名 + line（矛盾句）+ insight 结论
+          if (fusion && typeof fusion === 'object' && !Array.isArray(fusion)) {
+            // 两端名：name 优先，缺失时回退 of 拼接出的概念 id
+            const pair = fusion.name
+              || (Array.isArray(fusion.of) ? fusion.of.join(' × ') : (fusion.of || fusion.id || ''))
+            return (
+              <>
+                {pair && (
+                  <p className="text-sm font-sans mb-1" style={{ color: 'var(--sem-purple)' }}>
+                    {pair}
+                  </p>
+                )}
+                {fusion.line && (
+                  <p className="text-ink/40 text-[10px] font-sans leading-relaxed mb-1">
+                    {fusion.line}
+                  </p>
+                )}
+                {fusion.insight && (
+                  <p className="text-ink/70 text-sm font-sans whitespace-pre-wrap leading-relaxed">
+                    {fusion.insight}
+                  </p>
+                )}
+              </>
+            )
+          }
+          // 字符串/其他形态：直接以文本展示
+          return (
+            <p className="text-ink/70 text-sm font-sans whitespace-pre-wrap leading-relaxed">
+              {typeof fusion === 'string' ? fusion : JSON.stringify(fusion)}
+            </p>
+          )
+        })()}
+      </div>
     )
   }
 
@@ -1457,6 +1527,8 @@ function CrystallizeArchiveContent({ crystal, inspirationType }) {
           <span>{editError}</span>
         </div>
       )}
+      {/* 概念融合结论：提到最前渲染（张力对改造） */}
+      {renderFusion()}
       {renderFields()}
       {renderMetaFields()}
     </div>
@@ -1883,7 +1955,7 @@ function EpitaxyLinkedView({
             {/* 摘要字段（取前 3 个非元字段） */}
             <div className="space-y-1.5 mt-2">
               {Object.entries(crystal.fields)
-                .filter(([key]) => !['composable_with', 'follow_up_questions', '_supplement', 'archetype', 'detected_capsule', 'selected_dimensions', 'extensions'].includes(key))
+                .filter(([key]) => !['composable_with', 'follow_up_questions', '_supplement', 'archetype', 'detected_capsule', 'selected_dimensions', 'extensions', 'fusion'].includes(key))
                 .slice(0, 3)
                 .map(([key, value]) => {
                   const displayValue = Array.isArray(value)

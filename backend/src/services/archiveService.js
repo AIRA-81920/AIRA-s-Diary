@@ -17,7 +17,7 @@
 //   - bridges 含 dismissed（前端置灰区分），不含已级联删除的
 //   - fingerprintStale 来自 inspiration_embeddings.stale 字段
 
-import { db } from '../database/db.js';
+import { db, all } from '../database/db.js';
 import inspirationStorage from '../services/inspirationStorage.js';
 import { FingerprintService } from './fingerprintService.js';
 import { CoalesceScanService } from './coalesceScanService.js';
@@ -136,6 +136,7 @@ export const ArchiveService = {
     // 从文件系统读取 crystal 内容（L5：表无 crystal_json 字段）
     // 复用 inspirationStorage.getCrystallizeLatest 读取最新快照
     // K4 改造：保留 selected_dimensions / detected_capsule / concept_orientation 新字段（供前端 Detail 渲染徽章）
+    // 概念地图改造（SubTask 5.1）：在既有 selected_dimensions / detected_capsule 同位置透传 concept_map
     let crystal = null;
     try {
       const snapshot = await inspirationStorage.getCrystallizeLatest(inspirationId);
@@ -146,7 +147,9 @@ export const ArchiveService = {
           // K4 新增：保留新字段（前端 InspirationDetail 顶部徽章渲染依赖）
           selected_dimensions: snapshot.selected_dimensions || null,
           detected_capsule: snapshot.detected_capsule || null,
-          concept_orientation: snapshot.concept_orientation || null
+          concept_orientation: snapshot.concept_orientation || null,
+          // 概念地图新增：透传概念地图（从快照读；旧快照无此字段时为 null）
+          concept_map: snapshot.concept_map || null
         };
       } else if (snapshot && snapshot.crystal_type) {
         // 兜底：仅有 crystal_type 无内容
@@ -156,7 +159,9 @@ export const ArchiveService = {
           // K4 新增：兜底也保留新字段（保证前端徽章逻辑一致性）
           selected_dimensions: snapshot.selected_dimensions || null,
           detected_capsule: snapshot.detected_capsule || null,
-          concept_orientation: snapshot.concept_orientation || null
+          concept_orientation: snapshot.concept_orientation || null,
+          // 概念地图新增：兜底同样透传（保证前端逻辑一致性）
+          concept_map: snapshot.concept_map || null
         };
       }
     } catch (e) {
@@ -223,64 +228,66 @@ export const ArchiveService = {
       fragments: []           // 占位，后续填充
     }));
 
-    // 批量查询这些 proposal 下的所有 fragments
-    const proposalIds = proposals.map(p => `'${p.id}'`).join(',');
+    // 批量查询这些 proposal 下的所有 fragments（SEC-017：参数化 IN 绑定）
+    const proposalIdList = proposals.map(p => p.id);
     let fragmentsByProposal = {};
-    try {
-      const fragRows = db.exec(
-        `SELECT id, proposal_id, fragment_type, title, full_text, chunks_json, created_at
-         FROM epitaxy_fragments
-         WHERE proposal_id IN (${proposalIds})
-         ORDER BY created_at ASC`
-      );
-      if (fragRows.length > 0 && fragRows[0].values.length > 0) {
-        fragRows[0].values.forEach(row => {
-          const pid = row[1];
+    if (proposalIdList.length > 0) {
+      try {
+        const placeholders = proposalIdList.map(() => '?').join(',');
+        const fragRows = all(
+          `SELECT id, proposal_id, fragment_type, title, full_text, chunks_json, created_at
+           FROM epitaxy_fragments
+           WHERE proposal_id IN (${placeholders})
+           ORDER BY created_at ASC`,
+          proposalIdList
+        );
+        fragRows.forEach(row => {
+          const pid = row.proposal_id;
           if (!fragmentsByProposal[pid]) fragmentsByProposal[pid] = [];
           fragmentsByProposal[pid].push({
-            id: row[0],
+            id: row.id,
             proposalId: pid,
-            fragmentType: row[2],
-            title: row[3],
-            fullText: row[4],
-            chunksJson: row[5],   // 原始 LLM 词块 JSON（供参考）
-            createdAt: row[6],
+            fragmentType: row.fragment_type,
+            title: row.title,
+            fullText: row.full_text,
+            chunksJson: row.chunks_json,   // 原始 LLM 词块 JSON（供参考）
+            createdAt: row.created_at,
             chunks: []            // 占位，后续填充用户选定的 chunks
           });
         });
+      } catch (e) {
+        console.warn('[ArchiveService] query fragments failed:', e.message);
       }
-    } catch (e) {
-      console.warn('[ArchiveService] query fragments failed:', e.message);
     }
 
     // 批量查询所有 fragments 下的用户选定 chunks（knowledge_chunks）
     const allFragments = Object.values(fragmentsByProposal).flat();
     let chunksByFragment = {};
     if (allFragments.length > 0) {
-      const fragmentIds = allFragments.map(f => `'${f.id}'`).join(',');
+      const fragmentIdList = allFragments.map(f => f.id);
       try {
-        const chunkRows = db.exec(
+        const placeholders = fragmentIdList.map(() => '?').join(',');
+        const chunkRows = all(
           `SELECT id, fragment_id, original_text, chunk_text, chunk_kind, chunk_subkind, user_note, selected_at
            FROM knowledge_chunks
-           WHERE fragment_id IN (${fragmentIds})
-           ORDER BY selected_at ASC`
+           WHERE fragment_id IN (${placeholders})
+           ORDER BY selected_at ASC`,
+          fragmentIdList
         );
-        if (chunkRows.length > 0 && chunkRows[0].values.length > 0) {
-          chunkRows[0].values.forEach(row => {
-            const fid = row[1];
-            if (!chunksByFragment[fid]) chunksByFragment[fid] = [];
-            chunksByFragment[fid].push({
-              id: row[0],
-              fragmentId: fid,
-              originalText: row[2],
-              chunkText: row[3],
-              kind: row[4],
-              subkind: row[5],
-              userNote: row[6],
-              selectedAt: row[7]
-            });
+        chunkRows.forEach(row => {
+          const fid = row.fragment_id;
+          if (!chunksByFragment[fid]) chunksByFragment[fid] = [];
+          chunksByFragment[fid].push({
+            id: row.id,
+            fragmentId: fid,
+            originalText: row.original_text,
+            chunkText: row.chunk_text,
+            kind: row.chunk_kind,
+            subkind: row.chunk_subkind,
+            userNote: row.user_note,
+            selectedAt: row.selected_at
           });
-        }
+        });
       } catch (e) {
         console.warn('[ArchiveService] query chunks failed:', e.message);
       }

@@ -6,6 +6,8 @@ import OpenAI from 'openai'
 import { printModelConfig } from '../config/modelConfig.js'
 // Electron 打包路径适配：.env/.env.example 路径统一走 paths（打包后放 %APPDATA%，可写）
 import { resolveEnvPath, resolveEnvExamplePath } from '../config/paths.js'
+// 安全加固（SEC-003/SEC-005/SEC-009）：密钥掩码回读、https/内网 baseURL 校验
+import { maskSecret, isMasked, checkBaseUrlSafe } from '../utils/security.js'
 
 const router = express.Router()
 
@@ -83,7 +85,8 @@ router.get('/env', (_req, res) => {
     const agentKeys = ['CRYSTALLIZE', 'EPITAXY', 'COALESCE', 'CONVERSATION', 'VISION', 'DISTILL']
 
     const global = {
-      api_key: envVars.OPENAI_API_KEY || '',
+      // SEC-003 修复：密钥掩码回读（保留前 6 位 + 尾 4 位），完整明文永不下发
+      api_key: maskSecret(envVars.OPENAI_API_KEY || ''),
       base_url: envVars.OPENAI_BASE_URL || '',
       default_model: envVars.OPENAI_DEFAULT_MODEL || '',
       default_temperature: envVars.OPENAI_DEFAULT_TEMPERATURE !== undefined
@@ -96,13 +99,14 @@ router.get('/env', (_req, res) => {
         model: envVars[`OPENAI_MODEL_${agent}`] || '',
         temperature: envVars[`OPENAI_TEMP_${agent}`] !== undefined
           ? parseFloat(envVars[`OPENAI_TEMP_${agent}`]) : null,
-        api_key: envVars[`OPENAI_API_KEY_${agent}`] || '',
+        api_key: maskSecret(envVars[`OPENAI_API_KEY_${agent}`] || ''),
         base_url: envVars[`OPENAI_BASE_URL_${agent}`] || ''
       }
     }
 
     const search = {
-      serper_api_key: envVars.SERPER_API_KEY || ''
+      // Serper 密钥同样掩码
+      serper_api_key: maskSecret(envVars.SERPER_API_KEY || '')
     }
 
     res.json({ global, agents, search })
@@ -116,22 +120,36 @@ router.put('/env', (req, res) => {
     const { global = {}, agents = {}, search = {} } = req.body
     const updates = {}
 
-    if (typeof global.api_key === 'string') updates.OPENAI_API_KEY = global.api_key
-    if (typeof global.base_url === 'string') updates.OPENAI_BASE_URL = global.base_url
+    // SEC-003/005 修复：掩码值（含 ****）视为"未修改"不下发，防止前端把掩码当新密钥写入
+    if (typeof global.api_key === 'string' && !isMasked(global.api_key)) updates.OPENAI_API_KEY = global.api_key
+    // SEC-005/009：base_url 必须 https 且禁止内网/回环（防 AI 流量重定向到攻击者端点 / SSRF）
+    if (typeof global.base_url === 'string') {
+      const check = checkBaseUrlSafe(global.base_url)
+      if (check !== true) {
+        return res.status(400).json({ error: `全局 Base URL 不安全：${check}` })
+      }
+      updates.OPENAI_BASE_URL = global.base_url
+    }
     if (typeof global.default_model === 'string') updates.OPENAI_DEFAULT_MODEL = global.default_model
     if (typeof global.default_temperature === 'number') updates.OPENAI_DEFAULT_TEMPERATURE = String(global.default_temperature)
 
     for (const [agent, cfg] of Object.entries(agents || {})) {
       const upper = agent.toUpperCase()
-      // 文本字段：空字符串触发删除（回退到全局/代码默认）
+      // 文本字段：空字符串触发删除（回退到全局/代码默认）；掩码值视为未修改跳过
       if (typeof cfg.model === 'string') updates[`OPENAI_MODEL_${upper}`] = cfg.model
-      if (typeof cfg.api_key === 'string') updates[`OPENAI_API_KEY_${upper}`] = cfg.api_key
-      if (typeof cfg.base_url === 'string') updates[`OPENAI_BASE_URL_${upper}`] = cfg.base_url
+      if (typeof cfg.api_key === 'string' && !isMasked(cfg.api_key)) updates[`OPENAI_API_KEY_${upper}`] = cfg.api_key
+      if (typeof cfg.base_url === 'string') {
+        const check = checkBaseUrlSafe(cfg.base_url)
+        if (check !== true) {
+          return res.status(400).json({ error: `${upper} 的 Base URL 不安全：${check}` })
+        }
+        updates[`OPENAI_BASE_URL_${upper}`] = cfg.base_url
+      }
       // 温度联动删除：当某 Agent 的文本字段全空时，视为该 Agent 不再自定义，
       // 温度也一并清除（删除 .env 中 OPENAI_TEMP_<AGENT> 行，回退到全局/代码默认）
       const textFieldsAllEmpty =
         (typeof cfg.model === 'string' && cfg.model === '') &&
-        (typeof cfg.api_key === 'string' && cfg.api_key === '') &&
+        (!cfg.api_key || isMasked(cfg.api_key) || cfg.api_key === '') &&
         (typeof cfg.base_url === 'string' && cfg.base_url === '')
       if (textFieldsAllEmpty) {
         updates[`OPENAI_TEMP_${upper}`] = ''  // 触发删除
@@ -140,7 +158,7 @@ router.put('/env', (req, res) => {
       }
     }
 
-    if (typeof search.serper_api_key === 'string') updates.SERPER_API_KEY = search.serper_api_key
+    if (typeof search.serper_api_key === 'string' && !isMasked(search.serper_api_key)) updates.SERPER_API_KEY = search.serper_api_key
 
     writeEnvFile(ENV_PATH, updates)
 
@@ -159,6 +177,10 @@ router.put('/env', (req, res) => {
  * POST /env/test — 检测 API 配置是否可用（不写入 .env）
  * 功能：用前端传入的表单值临时创建客户端发测试请求
  * 实现：并行测试各配置项，Promise.allSettled 收集结果
+ * 安全语义（SEC-003 掩码的配套修复）：
+ *   - 前端 GET /env 只能拿到掩码密钥，"检测已保存配置"时 body 里 api_key 是掩码/空
+ *   - 此时由后端从 .env 读真实密钥代测（密钥不出服务端），且 baseURL 必须用服务端存储值，
+ *     杜绝"掩码钩子 + 攻击者 baseURL"把真实密钥外发
  */
 router.post('/env/test', async (req, res) => {
   const { global = {}, agents = {}, search = {} } = req.body
@@ -173,6 +195,25 @@ router.post('/env/test', async (req, res) => {
     DISTILL: '提炼 Distill'
   }
 
+  // 服务端存储的 .env 配置（仅在 body 传掩码/空值时代测使用）
+  const storedVars = parseEnvFile(ENV_PATH)
+
+  /**
+   * 解析"待测配置"：body 值为掩码或空 → 回退到服务端存储的真实值
+   * 返回 { apiKey, baseURL, fromStored }；fromStored=true 表示密钥来自服务端存储
+   */
+  function resolveTestConfig(bodyKey, bodyBaseUrl, storedKeyName, storedBaseName) {
+    const bodyHasKey = typeof bodyKey === 'string' && bodyKey.trim() && !isMasked(bodyKey)
+    if (bodyHasKey) {
+      // 用户输入了新密钥：用 body 的 baseURL（仍经 SEC-009 白名单校验）
+      return { apiKey: bodyKey, baseURL: bodyBaseUrl, fromStored: false }
+    }
+    // 掩码/空 → 用服务端存储的密钥 + 服务端存储的 baseURL（忽略 body baseURL，防外发）
+    const storedKey = storedVars[storedKeyName] || ''
+    const storedBase = storedVars[storedBaseName] || ''
+    return { apiKey: storedKey, baseURL: storedBase, fromStored: true }
+  }
+
   /**
    * 测试 OpenAI 兼容接口
    * 实现：临时 new OpenAI 客户端，发 max_tokens=5 的最简请求
@@ -182,10 +223,17 @@ router.post('/env/test', async (req, res) => {
     if (!apiKey || !apiKey.trim()) {
       return { name, ok: false, error: '未配置 API Key', latency: 0 }
     }
+    // SEC-009 修复：baseURL 白名单校验（https only + 禁止内网/回环），杜绝服务器代发内网探测
+    // fromStored=true 时 baseURL 来自服务端 .env，与密钥同源，无 SSRF/外发风险
+    const effectiveBaseURL = (baseURL && baseURL.trim()) || 'https://api.openai.com/v1'
+    const urlCheck = checkBaseUrlSafe(effectiveBaseURL)
+    if (urlCheck !== true) {
+      return { name, ok: false, error: `Base URL 被拒绝：${urlCheck}`, latency: 0 }
+    }
     try {
       const client = new OpenAI({
         apiKey: apiKey.trim(),
-        baseURL: (baseURL && baseURL.trim()) || 'https://api.openai.com/v1'
+        baseURL: effectiveBaseURL
       })
       // AbortController 控制超时
       const controller = new AbortController()
@@ -255,29 +303,46 @@ router.post('/env/test', async (req, res) => {
   // 收集所有待测项
   const tasks = []
 
-  // 全局配置：必测
+  // 全局配置：必测（body 传掩码/空 → 服务端存储值代测；模型同样回退存储值）
+  const g = resolveTestConfig(global.api_key, global.base_url, 'OPENAI_API_KEY', 'OPENAI_BASE_URL')
+  const gModel = global.default_model || storedVars.OPENAI_DEFAULT_MODEL || ''
   tasks.push(testOpenAI({
     name: '全局配置',
-    apiKey: global.api_key,
-    baseURL: global.base_url,
-    model: global.default_model
+    apiKey: g.apiKey,
+    baseURL: g.baseURL,
+    model: gModel
   }))
 
-  // per-agent 配置：仅在有独立 apiKey 或 baseURL 覆盖时才单独测
+  // per-agent 配置：有独立密钥/baseURL（含掩码形式的已保存值）才单独测
   for (const [key, cfg] of Object.entries(agents || {})) {
+    const upper = key.toUpperCase()
     const hasOverride = (cfg.api_key && cfg.api_key.trim()) || (cfg.base_url && cfg.base_url.trim())
     if (!hasOverride) continue
+    // Agent 独立密钥优先，掩码/空回退该 Agent 存储值，再无则回退全局存储值
+    const agentCfg = resolveTestConfig(
+      cfg.api_key,
+      cfg.base_url,
+      `OPENAI_API_KEY_${upper}`,
+      `OPENAI_BASE_URL_${upper}`
+    )
+    const fallback = resolveTestConfig(global.api_key, global.base_url, 'OPENAI_API_KEY', 'OPENAI_BASE_URL')
     tasks.push(testOpenAI({
-      name: AGENT_LABELS[key] || key,
-      apiKey: cfg.api_key || global.api_key,
-      baseURL: cfg.base_url || global.base_url,
-      model: cfg.model || global.default_model
+      name: AGENT_LABELS[upper] || key,
+      apiKey: agentCfg.apiKey || fallback.apiKey,
+      baseURL: agentCfg.fromStored
+        ? (agentCfg.baseURL || fallback.baseURL)   // 存储值代测：baseURL 与密钥同源
+        : agentCfg.baseURL,                          // 用户新输入的密钥：用其自带 baseURL
+      model: cfg.model || storedVars[`OPENAI_MODEL_${upper}`] || gModel
     }))
   }
 
-  // Serper 搜索：有填才测
-  if (search.serper_api_key && search.serper_api_key.trim()) {
-    tasks.push(testSerper(search.serper_api_key))
+  // Serper 搜索：有填才测（掩码 → 服务端存储值代测）
+  const serperBody = search.serper_api_key
+  const serperKey = (serperBody && serperBody.trim() && !isMasked(serperBody))
+    ? serperBody
+    : (storedVars.SERPER_API_KEY || '')
+  if (serperKey.trim()) {
+    tasks.push(testSerper(serperKey))
   }
 
   // 并行发起，allSettled 保证单个失败不影响其他

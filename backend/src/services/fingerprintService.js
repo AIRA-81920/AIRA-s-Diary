@@ -124,9 +124,11 @@ export const FingerprintService = {
 
     // 源 2：crystal（从文件系统读 latest，L5 双源合并），JSON 截断 ≤2000 字
     // K4 改造：同时读取 selected_dimensions / detected_capsule / concept_orientation（新字段）
+    // 概念地图改造：读取 concept_map.concepts[].name（第四源追加概念名列表）
     let crystalJson = '';
     let selectedDimensions = null;
     let detectedCapsule = null;
+    let conceptNames = null;
     try {
       const latest = await getCrystallizeLatest(inspirationId);
       if (latest && (latest.crystal || latest.prd)) {
@@ -139,6 +141,13 @@ export const FingerprintService = {
       if (latest) {
         selectedDimensions = latest.selected_dimensions || null;
         detectedCapsule = latest.detected_capsule || null;
+        // 概念地图新增：提取概念名列表（旧快照无 concept_map 时静默跳过）
+        const concepts = latest.concept_map?.concepts;
+        if (Array.isArray(concepts)) {
+          conceptNames = concepts
+            .map(c => (c && typeof c.name === 'string' ? c.name.trim() : ''))
+            .filter(Boolean);
+        }
       }
     } catch (err) {
       // 文件读取失败不阻塞（视为无 crystal）
@@ -180,9 +189,10 @@ export const FingerprintService = {
 
     // ===== 2. 构建 prompt =====
     // K4 改造：透传 selectedDimensions / detectedCapsule 给 _buildPrompt（四源输入）
+    // 概念地图改造：透传 conceptNames，第四源追加「概念：A、B、C」
     // v7 改造：新增 addendaText 作为第五源注入
     const inspirationType = inspiration.inspiration_type || '其他';
-    const prompt = this._buildPrompt({ inspirationType, contentExcerpt, crystalJson, chunksText, selectedDimensions, detectedCapsule, addendaText });
+    const prompt = this._buildPrompt({ inspirationType, contentExcerpt, crystalJson, chunksText, selectedDimensions, detectedCapsule, conceptNames, addendaText });
 
     // ===== 3. LLM 调用（withTimeout + withRetry） =====
     let fingerprint;
@@ -306,13 +316,14 @@ export const FingerprintService = {
    * 构建 LLM 生成指纹的 prompt
    * 功能：将五源（原文 + crystal + chunks + selected_dimensions + detected_capsule + addenda）合并为结构化 prompt
    * K4 改造：新增 selectedDimensions 和 detectedCapsule 参数，作为第四源注入
+   * 概念地图改造：第四源追加 conceptNames（概念名列表，形如「概念：A、B、C」）
    * v7 改造：新增 addendaText 参数，作为第五源注入，体现用户思路演进方向
    * v8 改造：源优先级分层——原文为核心源（70%语义占比），其余为补充源（≤30%），
    *          切断词块元标签污染跨灵感 cosine 召回的传播路径
    * 实现方式：模板拼接 + 核心/补充源分区展示 + 量化源占比约束
    * @private
    */
-  _buildPrompt({ inspirationType, contentExcerpt, crystalJson, chunksText, selectedDimensions, detectedCapsule, addendaText }) {
+  _buildPrompt({ inspirationType, contentExcerpt, crystalJson, chunksText, selectedDimensions, detectedCapsule, conceptNames, addendaText }) {
     // ===== 核心/补充源分区拼接（v8：明确源优先级）=====
     const coreSections = [];
     coreSections.push(`【灵感类型】${inspirationType}`);
@@ -329,6 +340,10 @@ export const FingerprintService = {
     // K4 新增：第四源 selected_dimensions（LLM 在 crystallize 阶段选择的维度路径）
     if (selectedDimensions && Array.isArray(selectedDimensions) && selectedDimensions.length > 0) {
       enrichSections.push(`【选中维度】\n${JSON.stringify(selectedDimensions)}`);
+    }
+    // 概念地图新增：第四源追加概念名列表（使多概念语义进入指纹与召回）
+    if (conceptNames && Array.isArray(conceptNames) && conceptNames.length > 0) {
+      enrichSections.push(`【概念】\n概念：${conceptNames.join('、')}`);
     }
     // K4 新增：第四源 detected_capsule（识别到的设定胶囊名称列表）
     if (detectedCapsule && Array.isArray(detectedCapsule) && detectedCapsule.length > 0) {

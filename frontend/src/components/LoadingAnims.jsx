@@ -179,7 +179,7 @@ export function ExcavateAnim() {
     <AnimShell
       color="#3b82f6"
       title="正在深挖这个方向..."
-      subtitle="AI 搜索已有案例、概念和陷阱"
+      subtitle="联网查证真实案例、技法与陷阱"
     >
       <svg width="48" height="48" viewBox="0 0 48 48" fill="none">
         {/* 顶部地面线 */}

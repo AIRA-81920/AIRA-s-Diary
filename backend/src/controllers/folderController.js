@@ -9,7 +9,7 @@ export async function list(req, res) {
     const data = Folder.getAll();
     res.json({ success: true, data });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -20,7 +20,7 @@ export async function create(req, res) {
     const folder = Folder.create({ name, color });
     res.status(201).json({ success: true, data: folder });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -34,7 +34,7 @@ export async function update(req, res) {
     }
     res.json({ success: true, data: folder });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -44,7 +44,7 @@ export async function remove(req, res) {
     Folder.delete(req.params.id);
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -58,6 +58,6 @@ export async function reorder(req, res) {
     Folder.batchUpdateSortOrder(items);
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }

@@ -20,9 +20,12 @@ import {
   AlertCircle,
   BookOpen,
   Plus,
-  Lightbulb
+  Lightbulb,
+  Link2
 } from 'lucide-react'
 import useStore from '../services/store.js'
+// v2 联网考据：来源链接统一走 openExternalLink（Web/Electron 兼容）
+import { openExternalLink } from '../services/openLink.js'
 import {
   KIND_COLORS,
   KIND_LABELS,
@@ -280,6 +283,8 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
             const fragKind = getFragmentKind(frag.type)
             const fragColor = getFragmentColor(frag.type)
             const typeLabel = getFragmentLabel(frag.type)
+            // v2 联网考据：汇总该片段内词块携带的来源（无来源时为空数组，下方区块不渲染）
+            const sources = collectSources(frag.chunks)
             return (
               <div
                 key={frag.id || fIdx}
@@ -307,6 +312,28 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
                 </div>
                 {/* 片段正文：词块仅作视觉高亮，不可单独点击 */}
                 <ChunkText fullText={frag.full_text} chunks={frag.chunks} />
+                {/* 依据来源（v2 联网考据）：该片段内词块带 source 时汇总展示，可点开；无来源则不渲染 */}
+                {sources.length > 0 && (
+                  <div className="mt-2 pt-1.5 border-t border-line/5 flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className="text-ink/30 text-[9px] font-sans flex items-center gap-0.5 flex-shrink-0">
+                      <Link2 size={9} />
+                      <span>依据</span>
+                    </span>
+                    {sources.map((s, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        // 阻止冒泡：卡片本身点击=选中该段，来源链接点击=打开网页
+                        onClick={(e) => { e.stopPropagation(); openExternalLink(s.url) }}
+                        className="text-[9px] font-sans truncate max-w-[180px] hover:underline"
+                        style={{ color: 'rgb(var(--cyan-rgb) / 0.8)' }}
+                        title={s.title}
+                      >
+                        {s.title}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -447,6 +474,26 @@ function EpitaxyPanel({ inspiration, onCollapse }) {
       </div>
     </aside>
   )
+}
+
+/**
+ * collectSources — 汇总片段内词块携带的来源链接（v2 联网考据）
+ * 功能：把一个 fragment 内各 chunk 的 source 去重后返回，供卡片底部展示"依据"
+ * 实现方式：遍历 chunks，按 url 去重；无 source 时返回空数组（调用方据此不渲染该区块）
+ * @param {Array} chunks - 片段词块数组，元素形如 { source: { title, url } }
+ * @returns {Array<{title:string, url:string}>}
+ */
+function collectSources(chunks) {
+  const seen = new Set()
+  const sources = []
+  for (const c of chunks || []) {
+    const url = c?.source?.url
+    if (url && !seen.has(url)) {
+      seen.add(url)
+      sources.push({ title: c.source.title || url, url })
+    }
+  }
+  return sources
 }
 
 /**

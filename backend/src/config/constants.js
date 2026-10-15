@@ -1177,6 +1177,15 @@ export const SUPPLEMENT_QUESTION_TEXT = {
 };
 
 // =========================================================================
+// 概念地图约束（概念地图驱动的结晶追问引擎）
+// =========================================================================
+// 功能：约束概念地图的规模，防止 LLM 枚举膨胀
+//   - MAX_CONCEPTS：单次概念地图最多枚举的独立概念数（prompt 要求 + 代码兜底截断）
+//   - MAX_FUSION_PAIRS：融合节点最多组合数（初版仅产出 1 个融合节点）
+// 契约：crystallizeAgent._buildPrompt 生成 prompt 时引用；run() 对返回的 concept_map 做兜底截断
+export const CONCEPT_MAP_LIMITS = { MAX_CONCEPTS: 6, MAX_FUSION_PAIRS: 3 };
+
+// =========================================================================
 // 类型字段配置（K4 新增，从 crystallizeAgent.js 迁移）
 // =========================================================================
 // 每种类型的 crystal 字段配置
@@ -1184,47 +1193,48 @@ export const SUPPLEMENT_QUESTION_TEXT = {
 // dynamicFields：按 selected_dimensions 附加的字段
 // metaFields：LLM 主动推断的元字段
 // aiInferredFields：LLM 主动推断的 AI 字段
+// 概念地图改造：8 个命名类型的 metaFields 追加 'fusion'（多概念融合结论；'其他' 类型不加）
 export const TYPE_BRANCHES = {
   '产品想法': {
     crystalType: 'prd',
     baseFields: ['title', 'goal', 'target_user', 'core_features'],
     dynamicFields: [],
-    metaFields: [],
+    metaFields: ['fusion'],
     aiInferredFields: []
   },
   '氛围画面': {
     crystalType: 'scene_card',
     baseFields: ['title', 'setting', 'sensory_detail', 'mood'],
     dynamicFields: ['protagonist', 'moment'],
-    metaFields: [],
+    metaFields: ['fusion'],
     aiInferredFields: []
   },
   '设定世界观': {
     crystalType: 'worldview',
     baseFields: ['title', 'premise', 'rules'],
     dynamicFields: ['inhabitants', 'tension'],
-    metaFields: [],
+    metaFields: ['fusion'],
     aiInferredFields: []
   },
   '创作素材': {
     crystalType: 'creative_direction',
     baseFields: ['title', 'medium', 'theme', 'style_refs'],
     dynamicFields: ['mood', 'technique'],
-    metaFields: ['composable_with'],
+    metaFields: ['composable_with', 'fusion'],
     aiInferredFields: []
   },
   '研究好奇': {
     crystalType: 'exploration_map',
     baseFields: ['title', 'core_question', 'known_boundary', 'unknown_direction'],
     dynamicFields: ['method', 'expected_output'],
-    metaFields: ['follow_up_questions'],
+    metaFields: ['follow_up_questions', 'fusion'],
     aiInferredFields: []
   },
   '角色人物': {
     crystalType: 'character_profile',
     baseFields: ['title', 'archetype', 'background', 'personality', 'flaw'],
     dynamicFields: ['motivation', 'relationships', 'mannerisms'],
-    metaFields: [],
+    metaFields: ['fusion'],
     aiInferredFields: ['archetype']
   },
   '概念': {
@@ -1233,14 +1243,14 @@ export const TYPE_BRANCHES = {
     // evolution 是 metaField（LLM 推断：可演化为命题/产品/美学/方法论）
     baseFields: ['title', 'definition', 'distinction'],
     dynamicFields: ['origin', 'signature_features', 'applicable_context'],
-    metaFields: ['evolution'],  // LLM 主动推断：{ directions: ['proposition', 'product', 'aesthetic', 'methodology'] }
+    metaFields: ['evolution', 'fusion'],  // LLM 主动推断：{ directions: [...] } + 融合结论
     aiInferredFields: []
   },
   '美学提案': {
     crystalType: 'aesthetic_proposal',
     baseFields: ['title', 'core_definition', 'aesthetic_attributes', 'emotional_core', 'differentiation'],
     dynamicFields: ['cultural_context', 'signature_elements'],
-    metaFields: ['extensions'],  // LLM 主动推断：{ variations: [], combinations: [] }
+    metaFields: ['extensions', 'fusion'],  // LLM 主动推断：{ variations: [], combinations: [] } + 融合结论
     aiInferredFields: []
   },
   '其他': {
@@ -1298,5 +1308,7 @@ export const CONSTANTS = {
   CAPSULE_TYPE_MAP,
   // fix6：删除 CONCEPT_ORIENTATIONS / CONCEPT_ORIENTATION_SIGNALS（概念类型不再使用）
   SUPPLEMENT_QUESTION_TEXT,
-  TYPE_BRANCHES
+  TYPE_BRANCHES,
+  // 概念地图改造
+  CONCEPT_MAP_LIMITS
 };

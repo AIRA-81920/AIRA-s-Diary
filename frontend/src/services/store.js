@@ -42,6 +42,24 @@ export function formatTime(value) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
+// ========== 灵感文本构造工具（张力对改造新增）==========
+/**
+ * 构造发给结晶后端的灵感原文（标题 + 正文）
+ * 功能：把「标题」与「正文」拼成完整原文，供 sense / tension / initial / generate_crystal 使用
+ * 实现方式：[title, content] 过滤空值、去重后，用换行拼接
+ * 原因：标题里常有用户自己起的名字（如 Riffgine(即兴引擎) 的「即兴引擎」）；
+ *      若只取 content，正文非空时标题会被丢掉，模型因此看不到用户的自称名，
+ *      只能用正文整句描述当概念名 —— 这恰恰会让张力对缺少"可命名的整体"那一端。
+ * @param {object} inspiration - 灵感对象（含 title / content）
+ * @returns {string}
+ */
+function buildInspirationText(inspiration) {
+  if (!inspiration) return ''
+  // 空值安全：过滤掉空串/null/undefined；去重：标题与正文相同（或内容为空）时不重复拼接
+  const unique = [...new Set([inspiration.title, inspiration.content].filter(Boolean))]
+  return unique.join('\n')
+}
+
 // ========== v9：AI 回复 [CORE] 标签解析工具 ==========
 // 设计背景：AI 在回复中用 [CORE]...[/CORE] 标签包裹核心观点，
 //   前端需要：(1) 流式渲染时不显示标签本身；(2) 流结束后解析出 core/context 分层存储
@@ -392,7 +410,9 @@ const useStore = create((set, get) => ({
   //   - questioning：按类型生成定制化问题（支持多选）
   //   - crystal_preview：按 crystal_type 生成对应字段结构的结晶体
   //   - done：已完成，可手动分流到 Epitaxy/Coalesce
-  crystallizeStage: 'idle',                  // idle | sensing | sense_confirm | questioning | crystal_preview | done
+  // 张力对改造新增取值：tension_select（候选 ≥2 时的勾选屏，用户删/保留后才出题）
+  // 注：并排计算张力对的时间窗沿用 sensing 加载态，不另设真实阶段（tensioning 不会被 set）
+  crystallizeStage: 'idle',                  // idle | sensing | sense_confirm | capsule_detection | tension_select | questioning | checkpoint | crystal_preview | done
   crystallizePRD: null,                      // 结晶体（M3-b 后字段结构按 crystal_type 决定，变量名保留兼容）
   crystallizeQuestions: [],                  // 当前一轮的追问问题列表
   crystallizeCurrentIdx: 0,                  // 当前问题索引
@@ -403,6 +423,14 @@ const useStore = create((set, get) => ({
   crystallizeError: null,                    // 错误信息
   crystallizeCollapsed: false,               // 面板收起态
   crystallizeDispatching: false,             // 分流中状态
+
+  // ========== 提问支路（AI 阐释旁路） ==========
+  // 功能：管理"提问追加"支路的对话状态。支路独立于主线，绝不写回 crystallize* / conceptMap
+  // 结构：{ [instanceKey]: { messages, visible, collapsed, draft, loading, error } }
+  //   messages 项形如 { role:'user'|'assistant', content, streaming }
+  //   instanceKey = `${inspirationId}:${questionId}`（换题即换实例 → 自动清空）
+  explainBranch: {},                         // 各题支路实例状态
+  explainBranchActiveKey: null,              // 当前活跃实例键（浮窗只渲染它）
   // M3-b 新增：Sense 阶段相关状态
   inspirationType: null,                     // 灵感类型（8 种之一 + "其他"）
   inspirationTypeConfidence: 0,              // Sense 置信度（0-1）
@@ -426,6 +454,22 @@ const useStore = create((set, get) => ({
   // ========== K4 新增：LLM 选择的维度路径 ==========
   // 设计：_buildPrompt 让 LLM 选择维度路径，前端展示 selected_dimensions 用于透明化
   selectedDimensions: [],                    // LLM 选择的维度路径数组
+
+  // ========== 概念地图（概念地图驱动的结晶追问引擎）==========
+  // 设计：问题 = 概念 × 维度。后端每轮显式返回 concept_map（服务端无状态，靠请求回显维持）
+  // 降级：旧数据 / 后端未返回该字段时 conceptMap 为 null，前端全链路回退旧行为（不崩）
+  conceptMap: null,                          // { mode, concepts[], fusion, coverage } 或 null
+  nextTarget: null,                          // 后端指定的下一个待追问概念 id（保留供展示/诊断）
+  checkpointInput: '',                       // 检查点"还想补充"输入框内容（随抽屉快照保留）
+  checkpointHint: '',                        // 检查点补充输入框的占位文案（后端 checkpoint_hint，可空）
+
+  // ========== 张力对（张力对驱动的结晶提问改造）==========
+  // 设计：点「开始结晶」时并排发起 sense 与 run(stage:'tension')，两者输入都只有原文、互不依赖；
+  //      张力候选先入缓存，勾选（删/保留）只在前端做，用户确认后才带保留对出题。
+  // 降级：tension 请求失败 / 旧后端无该字段 / 找不到张力 → 候选为空数组，静默走单概念路径（不阻断结晶）
+  tensionPairs: [],                          // AI 候选张力对数组（供应商结构见 spec §3）
+  tensionKept: [],                           // 用户保留的候选 id 列表（勾选屏的删除按钮只动这里）
+  tensionScan: null,                         // { mode, reason, proposed, kept } 落盘留痕（前端不展示，仅随请求回传）
 
   // ========== 布局状态 ==========
   // 设计思路：用户可自行拖拽各面板宽度，选中灵感时 Sidebar 自动挤压
@@ -740,9 +784,8 @@ const useStore = create((set, get) => ({
   openSettings: async () => {
     set({ settingsOpen: true, settingsLoading: true, settingsError: null })
     try {
-      const res = await fetch('/api/settings/env')
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const data = await res.json()
+      // 统一走 api.request，自动附加 x-local-token（Electron 生产模式）
+      const data = await api.request('/settings/env')
       set({ settingsData: data, settingsLoading: false })
     } catch (err) {
       set({ settingsError: err.message, settingsLoading: false })
@@ -763,13 +806,11 @@ const useStore = create((set, get) => ({
   saveSettings: async (data) => {
     set({ settingsSaving: true, settingsError: null })
     try {
-      const res = await fetch('/api/settings/env', {
+      // 统一走 api.request，自动附加 x-local-token（Electron 生产模式）
+      await api.request('/settings/env', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      await res.json()
       set({ settingsData: data, settingsSaving: false })
     } catch (err) {
       set({ settingsError: err.message, settingsSaving: false })
@@ -783,13 +824,11 @@ const useStore = create((set, get) => ({
   testSettings: async (data) => {
     set({ settingsTesting: true, testResults: null, settingsError: null })
     try {
-      const res = await fetch('/api/settings/env/test', {
+      // 统一走 api.request，自动附加 x-local-token（Electron 生产模式）
+      const { results } = await api.request('/settings/env/test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       })
-      if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      const { results } = await res.json()
       set({ testResults: results, settingsTesting: false })
     } catch (err) {
       set({ settingsError: err.message, settingsTesting: false })
@@ -813,10 +852,17 @@ const useStore = create((set, get) => ({
   /**
    * 清理指定灵感的抽屉快照
    * 功能：删除灵感或显式清理时调用
+   * 重跑结晶改造：新增可选 kind 参数——
+   *   - 不传 kind：清空该灵感的全部快照（原行为，deleteInspiration 等既有调用不受影响）
+   *   - 传 kind：仅当缓存条目的 kind 匹配时才删除（用于"重跑结晶"时只清结晶草稿，保留外延等其他抽屉）
    * @param {string} inspirationId
+   * @param {string} [kind] - 可选：仅清理该抽屉类型（'crystallize' | 'epitaxy'）
    */
-  clearDrawerCache: (inspirationId) => {
+  clearDrawerCache: (inspirationId, kind) => {
     set((st) => {
+      const current = st.drawerCache?.[inspirationId]
+      // 指定了 kind 但当前快照类型不匹配 → 不动（避免误删该灵感其他抽屉的"接着干"草稿）
+      if (kind && current?.kind !== kind) return {}
       const next = { ...st.drawerCache }
       delete next[inspirationId]
       return { drawerCache: next }
@@ -873,7 +919,15 @@ const useStore = create((set, get) => ({
         conceptScore: s.conceptScore,
         productScore: s.productScore,
         conceptOrientation: s.conceptOrientation,
-        selectedDimensions: s.selectedDimensions
+        selectedDimensions: s.selectedDimensions,
+        // 概念地图：随快照保留，"接着干"时恢复（否则地图丢失导致降级为旧进度显示）
+        conceptMap: s.conceptMap,
+        nextTarget: s.nextTarget,
+        checkpointInput: s.checkpointInput,
+        // 张力对：随快照保留，"接着干"时勾选屏的候选与保留集不丢
+        tensionPairs: s.tensionPairs,
+        tensionKept: s.tensionKept,
+        tensionScan: s.tensionScan
       })
     } else if (kind === 'epitaxy') {
       const s = get()
@@ -911,6 +965,8 @@ const useStore = create((set, get) => ({
    * 恢复抽屉中间态快照（私有方法）
    * 功能：从 drawerCache 恢复 crystallize/epitaxy 中间态字段
    * 实现方式：直接 set 快照中的字段（覆盖当前已 reset 的状态）
+   *   注意：本函数按 key 全量回填，因此快照里新增的字段（如 conceptMap / nextTarget /
+   *   checkpointInput）无需在此单独声明即可一并恢复
    * @private
    * @param {object} snapshot - _saveDrawerSnapshot 保存的快照对象
    */
@@ -1489,7 +1545,11 @@ const useStore = create((set, get) => ({
           crystallizeOtherAnswers: {},
           crystallizeConversation: [],
           crystallizeLoading: false,
-          crystallizeError: null
+          crystallizeError: null,
+          // 概念地图：无历史记录时置空（旧数据本就无此字段，天然降级）
+          conceptMap: null,
+          nextTarget: null,
+          checkpointInput: ''
         })
         return
       }
@@ -1499,10 +1559,15 @@ const useStore = create((set, get) => ({
         inspirationType: latest.inspiration_type || latest.inspirationType || null,
         crystalType: latest.crystal_type || latest.crystalType || null
       }
+      // 概念地图：落盘契约中与 crystal 同存，恢复后进度条/检查点才能正确显示；旧文件无该字段 → null
+      const mapInfo = {
+        conceptMap: latest.concept_map || latest.conceptMap || null,
+        nextTarget: latest.next_target || latest.nextTarget || null
+      }
       if (latest.user_confirmed || latest.status === 'confirmed') {
-        set({ crystallizeStage: 'done', crystallizePRD: latest.crystal || latest.prd, ...typeInfo })
+        set({ crystallizeStage: 'done', crystallizePRD: latest.crystal || latest.prd, ...typeInfo, ...mapInfo })
       } else if (latest.crystal || latest.prd) {
-        set({ crystallizeStage: 'crystal_preview', crystallizePRD: latest.crystal || latest.prd, ...typeInfo })
+        set({ crystallizeStage: 'crystal_preview', crystallizePRD: latest.crystal || latest.prd, ...typeInfo, ...mapInfo })
       }
     } catch (err) {
       // 加载失败不阻塞主流程
@@ -1542,82 +1607,269 @@ const useStore = create((set, get) => ({
       productScore: 0,
       conceptOrientation: null,
       // K4 新增：清理 selected_dimensions
-      selectedDimensions: []
+      selectedDimensions: [],
+      // 概念地图：一并清空（否则切换灵感后残留上个灵感的概念覆盖进度）
+      conceptMap: null,
+      nextTarget: null,
+      checkpointInput: '',
+      checkpointHint: '',
+      // 张力对：一并清空（否则切换灵感后残留上个灵感的候选与保留集）
+      tensionPairs: [],
+      tensionKept: [],
+      tensionScan: null,
+      // 提问支路：一并清空（换灵感/重新开始时，支路对话、草稿、浮窗状态全清）
+      explainBranch: {},
+      explainBranchActiveKey: null
     })
   },
 
   /**
-   * 开始结晶流程（M3-b 改造：先触发 Sense 感知类型）
-   * 功能：用户点击"开始结晶"后，先调用 Sense 分析灵感类型
-   *   - confidence ≥ 0.85：自动进入 questioning（透传类型给 initial 阶段）
-   *   - confidence < 0.85：进入 sense_confirm，让用户确认/修正类型
-   *   - Sense 失败（无 API key 等）：直接进入 questioning 用默认类型"产品想法"
+   * 开始结晶流程（M3-b 改造：先触发 Sense 感知类型；张力对改造：与张力识别并排）
+   * 功能：用户点击"开始结晶"后，并排发起两件事，两者输入都只有原文、互不依赖：
+   *   ① Sense 分析灵感类型 → 后续分支（失败兜底 / capsule_detection / 高置信直连 / 低置信 sense_confirm）
+   *   ② run(stage:'tension') 识别互相拉扯的点对 → 先入 store 缓存，供 gate 与勾选屏使用（不重复计算）
+   * 实现方式：
+   *   - Promise.all 并排发出，两端各自 .catch 兜底：任一失败都不影响另一个继续
+   *   - tension 失败 / 无该字段 → 候选空数组，静默走单概念路径（不阻断结晶）
+   *   - 所有"触发 initial"的入口统一改为过 _gateTension（候选 ≥2 会停到勾选屏）
    */
   startCrystallize: async (inspiration) => {
     if (!inspiration) return
-    // 进入 sensing 加载态
+    // 进入 sensing 加载态（张力对计算结果在此时间窗内一并得到，界面仍复用该加载态）
     set({ senseLoading: true, crystallizeError: null, crystallizeStage: 'sensing' })
-    try {
-      const text = inspiration.content || inspiration.title || ''
-      const result = await api.senseInspirationType(inspiration.id, text)
-      if (result.success === false) {
-        // Sense 失败：兜底用"产品想法"，直接进入 questioning
-        set({
-          inspirationType: '产品想法',
-          crystalType: 'prd',
-          senseLoading: false,
-          crystallizeStage: 'questioning'
-        })
-        // 用默认类型触发 initial 追问
-        get()._runInitialQuestioning(inspiration, '产品想法')
-        return
-      }
-      const data = result.data || result
-      const confidence = data.confidence || 0
-      const inspType = data.type || '其他'
-      // 保存 Sense 结果到状态（含 K4 新增字段）
+    // 灵感原文统一为「标题 + 正文」：标题里常有用户自己的命名，正文非空时不能把它丢掉（张力对改造）
+    const text = buildInspirationText(inspiration)
+
+    // 并排发起：类型感知 sense 与 张力对识别 run(stage:'tension')；各自 catch 兜底，互不阻塞
+    const [senseRes, tensionRes] = await Promise.all([
+      api.senseInspirationType(inspiration.id, text)
+        .catch((err) => ({ success: false, error: err.message })),
+      api.runCrystallize(inspiration.id, { stage: 'tension', userInput: text })
+        .catch((err) => ({ success: false, error: err.message }))
+    ])
+
+    // ① 先落张力对结果（无论 sense 成败都先缓存，保证后续 gate / 勾选屏可用且不重复计算）
+    {
+      const tData = (tensionRes && tensionRes.success !== false)
+        ? (tensionRes.data || tensionRes)
+        : null
+      const candidates = (tData && Array.isArray(tData.tension_pairs)) ? tData.tension_pairs : []
+      const proposed = candidates.length
       set({
-        inspirationType: inspType,
-        inspirationTypeConfidence: confidence,
-        inspirationTypeAlternatives: data.alternative_types || [],
-        inspirationTypeReasoning: data.reasoning || '',
-        crystalType: data.crystal_type || 'free_note',
-        senseLoading: false,
-        // K4 新增：保存 5 信号与 concept_orientation
-        senseSignals: data.signals || null,
-        conceptScore: data.concept_score || 0,
-        productScore: data.product_score || 0,
-        conceptOrientation: data.concept_orientation || null,
-        // K4 新增：保存 detected_capsules
-        detectedCapsules: data.detected_capsules || [],
-        // K4 新增：默认 capsuleDecision 为 null（未决策）
-        capsuleDecision: null
+        tensionPairs: candidates,
+        // 默认全部保留：勾选屏只做「删」，UI 状态始终以 tensionKept 为准
+        tensionKept: candidates.map((p) => p.id),
+        tensionScan: {
+          mode: proposed > 0 ? 'pairs' : 'none',
+          reason: (tData && tData.no_tension_reason) || null,
+          proposed,
+          kept: proposed
+        }
       })
+    }
 
-      // K4 新增：如果有 detected_capsules，优先进入 capsule_detection 阶段让用户决策
-      if (data.detected_capsules && data.detected_capsules.length > 0) {
-        set({ crystallizeStage: 'capsule_detection' })
-        return
-      }
-
-      // 高置信度：自动跳过确认，直接进入 questioning
-      if (confidence >= 0.85) {
-        set({ crystallizeStage: 'questioning' })
-        get()._runInitialQuestioning(inspiration, inspType)
-      } else {
-        // 低置信度：进入 sense_confirm 让用户确认
-        set({ crystallizeStage: 'sense_confirm' })
-      }
-    } catch (err) {
-      // Sense 异常：兜底用"产品想法"，直接进入 questioning
+    // ② Sense 分支：保持原有全部行为不变，只把"直接调 _runInitialQuestioning"的入口改为过 _gateTension
+    if (senseRes.success === false) {
+      // Sense 失败：兜底用"产品想法"，过 gate（有 ≥2 对候选时会先弹勾选屏）
       set({
         inspirationType: '产品想法',
         crystalType: 'prd',
         senseLoading: false,
         crystallizeStage: 'questioning'
       })
-      get()._runInitialQuestioning(inspiration, '产品想法')
+      get()._gateTension(inspiration, '产品想法')
+      return
     }
+    const data = senseRes.data || senseRes
+    const confidence = data.confidence || 0
+    const inspType = data.type || '其他'
+    // 保存 Sense 结果到状态（含 K4 新增字段）
+    set({
+      inspirationType: inspType,
+      inspirationTypeConfidence: confidence,
+      inspirationTypeAlternatives: data.alternative_types || [],
+      inspirationTypeReasoning: data.reasoning || '',
+      crystalType: data.crystal_type || 'free_note',
+      senseLoading: false,
+      // K4 新增：保存 5 信号与 concept_orientation
+      senseSignals: data.signals || null,
+      conceptScore: data.concept_score || 0,
+      productScore: data.product_score || 0,
+      conceptOrientation: data.concept_orientation || null,
+      // K4 新增：保存 detected_capsules
+      detectedCapsules: data.detected_capsules || [],
+      // K4 新增：默认 capsuleDecision 为 null（未决策）
+      capsuleDecision: null
+    })
+
+    // K4 新增：如果有 detected_capsules，优先进入 capsule_detection 阶段让用户决策
+    if (data.detected_capsules && data.detected_capsules.length > 0) {
+      set({ crystallizeStage: 'capsule_detection' })
+      return
+    }
+
+    // 高置信度：自动跳过确认，过 gate 进入出题（候选 ≥2 时停在勾选屏）
+    if (confidence >= 0.85) {
+      set({ crystallizeStage: 'questioning' })
+      get()._gateTension(inspiration, inspType)
+    } else {
+      // 低置信度：进入 sense_confirm 让用户确认（确认后由 confirmInspirationType 过 gate）
+      set({ crystallizeStage: 'sense_confirm' })
+    }
+  },
+
+  /**
+   * 重跑整个结晶流程（重跑结晶改造新增）
+   * 功能：把前端结晶状态清零后，从"感知类型"开始把整条流程重跑一遍（等价于：重置 + 点「开始结晶」）
+   * 实现方式：
+   *   1. resetCrystallize()：清空 crystallize* / 张力对 / 概念地图等全部前端中间态
+   *   2. clearDrawerCache(id, 'crystallize')：清掉该灵感的结晶抽屉草稿快照（仅 crystallize 那条，
+   *      保留 epitaxy 等其他抽屉草稿），否则下次打开抽屉时 _restoreDrawerSnapshot 会把旧中间态恢复回来
+   *   3. startCrystallize(inspiration)：从感知类型开始（并排发 tension；候选 ≥2 对时会进勾选屏）
+   * 语义：不删除任何已落盘数据（结晶文件、结晶历史、桥梁均保留），只是前端重开一轮
+   * @param {object} [inspiration] - 当前灵感（缺省取 selectedInspiration）
+   */
+  restartCrystallize: (inspiration) => {
+    const insp = inspiration || get().selectedInspiration
+    if (!insp) return
+    // 先清前端中间态，再清结晶抽屉草稿（保留其他抽屉），最后从感知类型重跑
+    get().resetCrystallize()
+    get().clearDrawerCache(insp.id, 'crystallize')
+    return get().startCrystallize(insp)
+  },
+
+  /**
+   * 内部方法：张力对闸门（张力对改造新增）
+   * 功能：所有"触发 initial 追问"的入口统一经过这里，按用户保留的张力对数量决定去向：
+   *   - 保留 ≥2 对 → 切到 tension_select（勾选屏）并停住，等用户删/保留后再出题
+   *   - 保留 ≤1 对 → 直接触发 initial（0 对时传空数组，后端走单概念路径）——静默、不弹屏
+   * 实现方式：保留对 = tensionPairs ∩ tensionKept；inspirationType 一律使用当前值
+   * @param {object} inspiration - 当前灵感
+   * @param {string} inspirationType - 当前灵感类型（sense 结果或用户确认后的类型）
+   * @param {string|null} capsuleDecision - 'use' | 'ignore' | null（K4）
+   * @param {Array} detectedCapsules - 识别到的胶囊数组（K4）
+   */
+  _gateTension: (inspiration, inspirationType, capsuleDecision = null, detectedCapsules = []) => {
+    if (!inspiration) return
+    const { tensionPairs, tensionKept } = get()
+    const keptPairs = (tensionPairs || []).filter((p) => (tensionKept || []).includes(p.id))
+    // 保留 ≥2 对：先让用户勾选，停在这里不发 initial
+    if (keptPairs.length >= 2) {
+      set({ crystallizeStage: 'tension_select' })
+      return
+    }
+    // 0 或 1 对：静默路径，直接出题（0 对时传空数组便于后端走单概念路径）
+    get()._runInitialQuestioning(inspiration, inspirationType, capsuleDecision, detectedCapsules, keptPairs)
+  },
+
+  /**
+   * 勾选屏：切换某对张力对的保留状态（张力对改造新增）
+   * 功能：在 tensionKept 中追加/移除该候选 id（勾选屏每张卡片的删除按钮走这里）
+   * 实现方式：tensionKept 只存 id，UI 始终以它为准；删到 0 对也能提交（等同"无张力对"）
+   * @param {string} id - 张力对候选 id
+   */
+  toggleTensionPair: (id) => {
+    if (!id) return
+    set((st) => {
+      const kept = st.tensionKept || []
+      const next = kept.includes(id) ? kept.filter((x) => x !== id) : [...kept, id]
+      return { tensionKept: next }
+    })
+  },
+
+  /**
+   * 勾选屏：确认张力对选择，开始出题（张力对改造新增）
+   * 功能：用户在勾选屏点击「开始提问」后，按当前保留集触发 initial
+   * 实现方式：从 get() 取当前灵感类型 / 胶囊决策 / 胶囊数组；保留 0 对或 1 对时也照常触发（等同静默路径）
+   * @param {object} [inspiration] - 当前灵感（缺省取 selectedInspiration）
+   */
+  confirmTensionSelection: (inspiration) => {
+    const insp = inspiration || get().selectedInspiration
+    if (!insp) return
+    const { tensionPairs, tensionKept, inspirationType, capsuleDecision, detectedCapsules, tensionScan } = get()
+    const keptPairs = (tensionPairs || []).filter((p) => (tensionKept || []).includes(p.id))
+    // 同步落盘留痕：kept = 用户最终保留的对数（spec §7），用于事后算被删比例（proposed/kept）
+    if (tensionScan) set({ tensionScan: { ...tensionScan, kept: keptPairs.length } })
+    // 与 confirmCapsuleUsage 的口径一致：只有 'use' 才透传胶囊数组，其余传空数组
+    const caps = capsuleDecision === 'use' ? (detectedCapsules || []) : []
+    get()._runInitialQuestioning(insp, inspirationType, capsuleDecision, caps, keptPairs)
+  },
+
+  /**
+   * 内部方法：统一处理 crystallize 接口的四分支响应（概念地图驱动的结晶追问引擎）
+   * 功能：按响应 stage 把 concept_map / next_target / clarifying_questions / crystal 落到 store
+   * 实现方式：
+   *   - stage === 'checkpoint'：地图走完，切到 checkpoint 阶段等用户确认
+   *   - stage === 'A' | 'B'  ：继续追问，概念地图整体替换（questions 保持"仅含当前一题"）
+   *   - stage === 'C'        ：生成结晶体，切到 crystal_preview
+   *   - 无 stage（旧后端）：按旧行为兜底（有 crystal → 预览；有 questions → 追问）
+   *   - concept_map 缺失时：forceMapReset 为 true（新起点）则置 null，否则保留旧地图（老后端不丢地图）
+   * @param {object} data - 已解包的后端响应体
+   * @param {object} [opts]
+   * @param {boolean} [opts.forceMapReset] - 缺失 concept_map 时是否也把地图置空（initial 新起点用）
+   * @returns {'questioning'|'checkpoint'|'crystal_preview'|'unknown'} 实际落地的阶段
+   */
+  _applyCrystallizeResponse: (data, opts = {}) => {
+    // 张力对阶段：中间产物，不切阶段、不替换地图、不落任何分支
+    // （张力结果已在 startCrystallize 中单独入 store，此处仅显式跳过避免误落 unknown）
+    if (data.stage === 'tension') return 'tension'
+    const hasMapKey = data.concept_map !== undefined
+    const mapPatch = hasMapKey
+      ? { conceptMap: data.concept_map || null }
+      : (opts.forceMapReset ? { conceptMap: null } : {})
+    const targetPatch = hasMapKey ? { nextTarget: data.next_target || null } : {}
+    const dimPatch = data.selected_dimensions ? { selectedDimensions: data.selected_dimensions } : {}
+
+    // ① checkpoint：地图走完，清空当前题，等用户在面板上确认方向
+    if (data.stage === 'checkpoint') {
+      set({
+        ...mapPatch,
+        ...targetPatch,
+        ...dimPatch,
+        crystallizeStage: 'checkpoint',
+        crystallizeQuestions: [],
+        crystallizeCurrentIdx: 0,
+        crystallizeAnswers: {},
+        crystallizeOtherAnswers: {},
+        // 检查点补充输入框占位文案：后端可选返回，缺失时置空（前端回退硬编码文案）
+        checkpointHint: data.checkpoint_hint || '',
+        crystallizeLoading: false
+      })
+      return 'checkpoint'
+    }
+
+    // ② A / B：继续追问（后端每轮只回一题，前端保持"仅含当前一题"的数组语义）
+    if (data.stage === 'A' || data.stage === 'B' ||
+        (!data.stage && !data.crystal && !data.prd &&
+         Array.isArray(data.clarifying_questions) && data.clarifying_questions.length > 0)) {
+      set({
+        ...mapPatch,
+        ...targetPatch,
+        ...dimPatch,
+        crystallizeQuestions: data.clarifying_questions || [],
+        crystallizeCurrentIdx: 0,
+        crystallizeAnswers: {},
+        crystallizeOtherAnswers: {},
+        crystallizeStage: 'questioning',
+        crystallizeLoading: false
+      })
+      return 'questioning'
+    }
+
+    // ③ C：生成结晶体
+    if (data.stage === 'C' || data.crystal || data.prd) {
+      set({
+        ...mapPatch,
+        ...targetPatch,
+        ...dimPatch,
+        crystallizePRD: data.crystal || data.prd,
+        crystallizeStage: 'crystal_preview',
+        crystallizeLoading: false
+      })
+      return 'crystal_preview'
+    }
+
+    return 'unknown'
   },
 
   /**
@@ -1625,51 +1877,40 @@ const useStore = create((set, get) => ({
    * 功能：调用 runCrystallize with stage='initial' + inspirationType，根据返回切换到 questioning
    * 实现方式：从 store 读取 inspirationType，透传给后端
    * K4 改造：新增 capsuleDecision / detectedCapsules 参数，透传给后端 _buildPrompt
+   * 张力对改造：新增第 5 个参数 tensionPairs（用户保留的张力对；空数组也照带，便于后端走单概念路径）
    * @param {object} inspiration - 当前灵感
    * @param {string} inspirationType - 灵感类型
    * @param {string|null} capsuleDecision - 'use' | 'ignore' | null（K4 新增）
    * @param {Array} detectedCapsules - 识别到的胶囊数组（K4 新增）
+   * @param {Array} tensionPairs - 用户保留的张力对数组（张力对改造新增，默认空数组）
    */
-  _runInitialQuestioning: async (inspiration, inspirationType, capsuleDecision = null, detectedCapsules = []) => {
+  _runInitialQuestioning: async (inspiration, inspirationType, capsuleDecision = null, detectedCapsules = [], tensionPairs = []) => {
     set({ crystallizeLoading: true, crystallizeError: null })
     try {
       const result = await api.runCrystallize(inspiration.id, {
         stage: 'initial',
-        userInput: inspiration.content || inspiration.title || '',
+        // 灵感原文统一为「标题 + 正文」（标题里有用户的命名，不能因正文非空而丢弃）
+        userInput: buildInspirationText(inspiration),
         crystalDraft: {},
         conversationHistory: [],
         inspirationType,
         // K4 新增：透传胶囊决策
         capsuleDecision,
-        detectedCapsules
+        detectedCapsules,
+        // 概念地图：initial 是首轮，按契约上一轮地图传 null
+        conceptMap: null,
+        // 张力对：用户保留的张力对（空数组照带，后端据此决定走多概念还是单概念路径）
+        tensionPairs
       })
       if (result.success === false) {
         set({ crystallizeError: result.error || '结晶失败', crystallizeLoading: false })
         return
       }
       const data = result.data || result
-      // 根据返回的 stage 字段切换：A/B = 追问，C = 已生成结晶体
-      if (data.stage === 'A' || data.stage === 'B') {
-        set({
-          crystallizeQuestions: data.clarifying_questions || [],
-          crystallizeCurrentIdx: 0,
-          crystallizeAnswers: {},
-          crystallizeOtherAnswers: {},
-          crystallizeStage: 'questioning',
-          crystallizeLoading: false,
-          // K4 新增：保存 selected_dimensions
-          selectedDimensions: data.selected_dimensions || []
-        })
-      } else if (data.crystal || data.prd) {
-        // LLM 直接生成了结晶体（跳过追问）
-        set({
-          crystallizePRD: data.crystal || data.prd,
-          crystallizeStage: 'crystal_preview',
-          crystallizeLoading: false,
-          // K4 新增：保存 selected_dimensions
-          selectedDimensions: data.selected_dimensions || []
-        })
-      } else {
+      // 统一按四分支处理：A（地图+首题）/ B（换题）/ checkpoint / C（结晶体）
+      // initial 是新起点：后端未返回地图时（LLM 输出不合规）置空，回退旧行为
+      const kind = get()._applyCrystallizeResponse(data, { forceMapReset: true })
+      if (kind === 'unknown') {
         set({ crystallizeStage: 'done', crystallizeLoading: false })
       }
     } catch (err) {
@@ -1699,9 +1940,10 @@ const useStore = create((set, get) => ({
       crystallizeStage: 'questioning'
     })
     // fix：确认类型后立即用该类型触发 initial 追问（与 changeInspirationType 行为一致）
+    // 张力对改造：改为过 gate——保留 ≥2 对时会被拦到 tension_select 勾选屏
     const inspiration = get().selectedInspiration
     if (inspiration) {
-      get()._runInitialQuestioning(inspiration, type)
+      get()._gateTension(inspiration, type)
     }
   },
 
@@ -1717,13 +1959,10 @@ const useStore = create((set, get) => ({
   confirmCapsuleUsage: (decision, inspiration) => {
     set({ capsuleDecision: decision })
     set({ crystallizeStage: 'questioning' })
-    if (decision === 'use') {
-      // 使用胶囊：透传 detectedCapsules 触发差异化提问
-      get()._runInitialQuestioning(inspiration, get().inspirationType, 'use', get().detectedCapsules)
-    } else {
-      // 忽略胶囊：按原流程提问，detectedCapsules 传空数组
-      get()._runInitialQuestioning(inspiration, get().inspirationType, 'ignore', [])
-    }
+    // 张力对改造：改为过 gate——保留 ≥2 对时会被拦到 tension_select 勾选屏
+    // 口径与原来一致：只有 'use' 才透传 detectedCapsules，'ignore' 传空数组
+    const caps = decision === 'use' ? get().detectedCapsules : []
+    get()._gateTension(inspiration, get().inspirationType, decision, caps)
   },
 
   /**
@@ -1752,8 +1991,12 @@ const useStore = create((set, get) => ({
       crystallizeStage: 'questioning'
     })
     // 用新类型重新触发追问
+    // 张力对改造：携带用户已保留的张力对（保住已选的点，概念地图不退化为单概念）；
+    //            此处**不**过 _gateTension——用户此时已在追问中，不该被弹回勾选屏
     if (inspiration) {
-      get()._runInitialQuestioning(inspiration, newType)
+      const { tensionPairs, tensionKept } = get()
+      const keptPairs = (tensionPairs || []).filter((p) => (tensionKept || []).includes(p.id))
+      get()._runInitialQuestioning(inspiration, newType, null, [], keptPairs)
     }
   },
 
@@ -1795,7 +2038,12 @@ const useStore = create((set, get) => ({
         userInput: finalAnswer,
         crystalDraft: state.crystallizePRD || {},
         conversationHistory: updatedHistory,
-        inspirationType: state.inspirationType
+        inspirationType: state.inspirationType,
+        // 概念地图：把上一轮地图回显给后端（服务端无状态，靠回显维持概念轴）
+        conceptMap: state.conceptMap || null,
+        // 加固：回传上一题归属的概念（target_concept，融合题为 "A×B"），
+        // 后端据此在代码层标记该概念已覆盖，不再依赖 LLM 自觉回填
+        answeredConcept: currentQ?.target_concept || null
       })
       if (result.success === false) {
         set({ crystallizeError: result.error || '结晶失败', crystallizeLoading: false })
@@ -1803,30 +2051,104 @@ const useStore = create((set, get) => ({
       }
       const data = result.data || result
       set({ crystallizeConversation: updatedHistory })
-      if (data.crystal || data.prd) {
-        // 信息已充分 → 生成结晶体
-        set({
-          crystallizePRD: data.crystal || data.prd,
-          crystallizeStage: 'crystal_preview',
-          crystallizeLoading: false
-        })
-      } else if (data.clarifying_questions && data.clarifying_questions.length > 0) {
-        // 继续追问：替换问题列表并重置索引
-        set({
-          crystallizeQuestions: data.clarifying_questions,
-          crystallizeCurrentIdx: 0,
-          crystallizeAnswers: {},
-          crystallizeOtherAnswers: {},
-          crystallizeLoading: false
-        })
-      } else {
-        // 没有继续问题也没有 PRD → 跳到生成 PRD
+      // 统一四分支：A/B（更新地图 + 换题）/ checkpoint（地图走完）/ C（结晶体）
+      const kind = get()._applyCrystallizeResponse(data)
+      if (kind === 'unknown') {
+        // 没有继续问题也没有结晶体 → 跳到生成 PRD（保留既有兜底行为）
         set({ crystallizeLoading: false })
         get().skipToPRD(inspiration)
       }
     } catch (err) {
       set({ crystallizeError: err.message, crystallizeLoading: false })
     }
+  },
+
+  /**
+   * 检查点：确认方向，生成结晶（概念地图驱动的结晶追问引擎）
+   * 功能：地图走完后用户在检查点点击"就这样，生成结晶"，以 generate_crystal + conceptMap 提交
+   * 实现方式：复用 api.runCrystallize，请求带 conceptMap（后端据此注入融合题结论）；
+   *          响应走四分支，期望 stage:"C" + crystal（含 fusion 元字段）→ 切到 crystal_preview
+   * @param {object} [inspiration] - 当前灵感（缺省取 selectedInspiration）
+   */
+  confirmCheckpoint: async (inspiration) => {
+    const insp = inspiration || get().selectedInspiration
+    if (!insp) return
+    const state = get()
+    set({ crystallizeLoading: true, crystallizeError: null })
+    try {
+      const result = await api.runCrystallize(insp.id, {
+        stage: 'generate_crystal',
+        userInput: insp.content || insp.title || '',
+        crystalDraft: state.crystallizePRD || {},
+        conversationHistory: state.crystallizeConversation,
+        inspirationType: state.inspirationType,
+        conceptMap: state.conceptMap || null,
+        checkpointInput: null,
+        // 张力对：把张力扫描结果回显给后端（服务端无状态），供结晶轮落盘留痕；缺失时不带该键
+        tensionScan: state.tensionScan || undefined
+      })
+      if (result.success === false) {
+        set({ crystallizeError: result.error || '生成结晶体失败', crystallizeLoading: false })
+        return
+      }
+      const data = result.data || result
+      const kind = get()._applyCrystallizeResponse(data)
+      if (kind === 'unknown') {
+        set({ crystallizeLoading: false, crystallizeError: '未返回结晶体' })
+      }
+    } catch (err) {
+      set({ crystallizeError: err.message, crystallizeLoading: false })
+    }
+  },
+
+  /**
+   * 检查点：还想补充点什么 → 把新方向登记为新概念并回到追问循环
+   * 功能：用户在检查点输入新方向后以 questioning + checkpointInput 提交，
+   *       后端把该输入登记为新概念节点（uncovered）并返回该概念的题目（stage:"B"）
+   * 实现方式：请求带 checkpointInput + conceptMap；响应走四分支，期望落回 questioning；
+   *          无论结果如何都清空输入框，避免下次检查点复用旧文本
+   * @param {string} input - 用户补充的方向文本
+   * @param {object} [inspiration] - 当前灵感（缺省取 selectedInspiration）
+   */
+  reopenCheckpoint: async (input, inspiration) => {
+    const insp = inspiration || get().selectedInspiration
+    const text = (input || '').trim()
+    if (!insp || !text) return
+    const state = get()
+    set({ crystallizeLoading: true, crystallizeError: null })
+    try {
+      const result = await api.runCrystallize(insp.id, {
+        stage: 'questioning',
+        userInput: text,
+        crystalDraft: state.crystallizePRD || {},
+        conversationHistory: state.crystallizeConversation,
+        inspirationType: state.inspirationType,
+        conceptMap: state.conceptMap || null,
+        checkpointInput: text
+      })
+      if (result.success === false) {
+        set({ crystallizeError: result.error || '提交补充方向失败', crystallizeLoading: false })
+        return
+      }
+      const data = result.data || result
+      const kind = get()._applyCrystallizeResponse(data)
+      // 已成功回到追问循环则清空输入框；仍停留检查点（后端未接受补充）时保留文本供用户修改
+      if (kind !== 'checkpoint') set({ checkpointInput: '' })
+      if (kind === 'unknown') {
+        set({ crystallizeLoading: false, crystallizeError: '未返回追问问题' })
+      }
+    } catch (err) {
+      set({ crystallizeError: err.message, crystallizeLoading: false })
+    }
+  },
+
+  /**
+   * 设置检查点"还想补充"输入框内容
+   * 功能：受控输入，内容存入 checkpointInput（随抽屉快照保留，"接着干"不丢草稿）
+   * @param {string} value - 输入框文本
+   */
+  setCheckpointInput: (value) => {
+    set({ checkpointInput: value || '' })
   },
 
   /**
@@ -1839,18 +2161,20 @@ const useStore = create((set, get) => ({
     try {
       const result = await api.runCrystallize(inspiration.id, {
         stage: 'generate_crystal',
-        userInput: inspiration.content || inspiration.title || '',
+        // 灵感原文统一为「标题 + 正文」（标题里有用户的命名，不能因正文非空而丢弃）
+        userInput: buildInspirationText(inspiration),
         crystalDraft: get().crystallizePRD || {},
-        inspirationType: get().inspirationType
+        inspirationType: get().inspirationType,
+        // 概念地图：把地图一并提交，让 crystal 生成时能注入融合结论（无地图时传 null 不影响旧行为）
+        conceptMap: get().conceptMap || null
       })
       if (result.success === false) {
         set({ crystallizeError: result.error || '生成结晶体失败', crystallizeLoading: false })
         return
       }
       const data = result.data || result
-      if (data.crystal || data.prd) {
-        set({ crystallizePRD: data.crystal || data.prd, crystallizeStage: 'crystal_preview', crystallizeLoading: false })
-      } else {
+      const kind = get()._applyCrystallizeResponse(data)
+      if (kind !== 'crystal_preview') {
         set({ crystallizeLoading: false, crystallizeError: '未返回结晶体' })
       }
     } catch (err) {
@@ -2261,6 +2585,185 @@ const useStore = create((set, get) => ({
       // 流式 fetch 本身抛错（非业务 error 帧）：回滚
       set({ conversationMessages: prevMessages, conversationError: err.message, conversationLoading: false })
     }
+  },
+
+  /**
+   * 提问支路：激活实例（挂载/切题时调用）
+   * 功能：确保该实例存在（无则创建默认态）+ 设为 activeKey + 清掉其它实例
+   * 实现方式：换题 → 不同 instanceKey → 这里把旧实例从 explainBranch 中移除，实现"换题清空、防残留"
+   * @param {string} instanceKey - `${inspirationId}:${questionId}`
+   */
+  askBranchActivate: (instanceKey) => {
+    if (!instanceKey) return
+    set((state) => {
+      const prev = state.explainBranch[instanceKey]
+      return {
+        // 只保留当前实例（其余丢弃），已存在则原样保留（同一题内收起/展开不丢内容）
+        // collapsed 默认 true：提问面板平时不显露，由右下角「有问题」放大镜按钮展开
+        explainBranch: {
+          [instanceKey]: prev || { messages: [], visible: false, collapsed: true, draft: '', loading: false, error: null }
+        },
+        explainBranchActiveKey: instanceKey
+      }
+    })
+  },
+
+  /**
+   * 提问支路：预填草稿（点「阐释题目」或 chip 时调用）
+   * 功能：只写 draft，不发送（用户可改可补）
+   */
+  askBranchPrefill: (instanceKey, text) => {
+    if (!instanceKey) return
+    set((state) => {
+      const inst = state.explainBranch[instanceKey]
+      if (!inst) return {}
+      return { explainBranch: { ...state.explainBranch, [instanceKey]: { ...inst, draft: text } } }
+    })
+  },
+
+  /**
+   * 提问支路：受控输入框 setter
+   * 功能：把用户输入写回该实例的 draft
+   */
+  askBranchSetDraft: (instanceKey, text) => {
+    if (!instanceKey) return
+    set((state) => {
+      const inst = state.explainBranch[instanceKey]
+      if (!inst) return {}
+      return { explainBranch: { ...state.explainBranch, [instanceKey]: { ...inst, draft: text } } }
+    })
+  },
+
+  /**
+   * 提问支路：发送本轮提问（用户点「发送」时调用）
+   * 功能：把 user 提问与空 assistant 占位追加进 messages，流式填充 AI 回复
+   * 实现方式：
+   *   - 空 draft / loading 中直接返回
+   *   - 先追加 {role:'user'} 与 {role:'assistant', streaming:true}，置 visible:true / collapsed:false / loading:true
+   *   - thread = 追加前的 messages 映射（跳过空内容）再补本次 user，作为支路的完整上下文
+   *   - onDelta 把增量累加到"最后一条 assistant"；onDone/onError 清除 streaming 并 loading:false
+   *   - onError 额外把错误写进实例 error（保留用户气泡，不回滚整轮）
+   * @param {string} instanceKey
+   * @param {{question: object, context: object}} payload - 请求体的 question / context
+   */
+  askBranchSend: async (instanceKey, { question, context } = {}) => {
+    const state = get()
+    const inst = state.explainBranch[instanceKey]
+    if (!inst) return
+    const text = (inst.draft || '').trim()
+    // 空内容或正在加载：不发送
+    if (!text || inst.loading) return
+    // thread：追加前的历史（跳过空内容）+ 本次提问
+    const thread = [
+      ...inst.messages
+        .filter((m) => m && m.content && m.content.trim())
+        .map((m) => ({ role: m.role, content: m.content })),
+      { role: 'user', content: text }
+    ]
+    const nextMessages = [
+      ...inst.messages,
+      { role: 'user', content: text },
+      { role: 'assistant', content: '', streaming: true }
+    ]
+    set({
+      explainBranch: {
+        ...state.explainBranch,
+        [instanceKey]: {
+          ...inst,
+          messages: nextMessages,
+          visible: true,
+          collapsed: false,
+          draft: '',
+          loading: true,
+          error: null
+        }
+      }
+    })
+    try {
+      // 流式回调：每个 delta 累加到该实例最后一条 assistant
+      const onDelta = (chunk) => {
+        const cur = get().explainBranch[instanceKey]
+        if (!cur) return
+        const msgs = cur.messages.map((m, i) =>
+          i === cur.messages.length - 1 && m.role === 'assistant'
+            ? { ...m, content: (m.content || '') + chunk }
+            : m
+        )
+        set({ explainBranch: { ...get().explainBranch, [instanceKey]: { ...cur, messages: msgs } } })
+      }
+      const onDone = () => {
+        const cur = get().explainBranch[instanceKey]
+        if (!cur) return
+        const msgs = cur.messages.map((m, i) =>
+          i === cur.messages.length - 1 && m.role === 'assistant' ? { ...m, streaming: false } : m
+        )
+        set({ explainBranch: { ...get().explainBranch, [instanceKey]: { ...cur, messages: msgs, loading: false } } })
+      }
+      const onError = (errMsg) => {
+        const cur = get().explainBranch[instanceKey]
+        if (!cur) return
+        // 清除流式标记 + 结束加载；保留气泡，把错误写进实例 error
+        const msgs = cur.messages.map((m, i) =>
+          i === cur.messages.length - 1 && m.role === 'assistant' ? { ...m, streaming: false } : m
+        )
+        set({ explainBranch: { ...get().explainBranch, [instanceKey]: { ...cur, messages: msgs, loading: false, error: errMsg } } })
+      }
+      await api.explainStream({ question, context, thread }, { onDelta, onDone, onError })
+    } catch (err) {
+      // 流式 fetch 本身抛错（非业务 error 帧）：同样保留气泡，记录错误
+      const cur = get().explainBranch[instanceKey]
+      if (!cur) return
+      const msgs = cur.messages.map((m, i) =>
+        i === cur.messages.length - 1 && m.role === 'assistant' ? { ...m, streaming: false } : m
+      )
+      set({ explainBranch: { ...get().explainBranch, [instanceKey]: { ...cur, messages: msgs, loading: false, error: err.message } } })
+    }
+  },
+
+  /**
+   * 提问支路：收起「提问追加」区
+   * 功能：只切 collapsed=true（浮窗随 collapsed 一并隐藏，但 visible 保留 → 展开即原样回来）
+   */
+  askBranchCollapse: (instanceKey) => {
+    if (!instanceKey) return
+    set((state) => {
+      const inst = state.explainBranch[instanceKey]
+      if (!inst) return {}
+      return { explainBranch: { ...state.explainBranch, [instanceKey]: { ...inst, collapsed: true } } }
+    })
+  },
+
+  /**
+   * 提问支路：展开「提问追加」区
+   * 功能：只切 collapsed=false（浮窗按原样回来）
+   */
+  askBranchExpand: (instanceKey) => {
+    if (!instanceKey) return
+    set((state) => {
+      const inst = state.explainBranch[instanceKey]
+      if (!inst) return {}
+      return { explainBranch: { ...state.explainBranch, [instanceKey]: { ...inst, collapsed: false } } }
+    })
+  },
+
+  /**
+   * 提问支路：单独关闭浮窗（✕ 或点毛玻璃）
+   * 功能：只切 visible=false（不影响提问追加、不清草稿/消息）
+   */
+  askBranchCloseFloat: (instanceKey) => {
+    if (!instanceKey) return
+    set((state) => {
+      const inst = state.explainBranch[instanceKey]
+      if (!inst) return {}
+      return { explainBranch: { ...state.explainBranch, [instanceKey]: { ...inst, visible: false } } }
+    })
+  },
+
+  /**
+   * 提问支路：清空全部实例（收尾/重置）
+   */
+  askBranchClearAll: () => {
+    set({ explainBranch: {}, explainBranchActiveKey: null })
   },
 
   /**

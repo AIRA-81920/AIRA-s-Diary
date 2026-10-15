@@ -5,22 +5,43 @@
 // M3 变更：原 Clarify 相关方法重命名为 Crystallize，端点前缀 /clarify/ → /crystallize/
 const BASE_URL = '/api'
 
+// ========== 本地 API 令牌（SEC-002） ==========
+// 功能：Electron 主进程每次启动生成随机令牌，经 preload 的 getLocalToken 下发；
+//       前端所有 /api 请求统一附加 x-local-token 头，无令牌的跨源网页请求被后端 401 拒绝。
+//       纯 Web 开发模式（无 electronAPI）下令牌不存在，后端退化为 Origin 校验，行为不变。
+let localTokenPromise = null
+function getLocalToken() {
+  if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.getLocalToken === 'function') {
+    if (!localTokenPromise) {
+      localTokenPromise = window.electronAPI.getLocalToken().catch(() => null)
+    }
+    return localTokenPromise
+  }
+  return Promise.resolve(null)
+}
+
 /**
  * 通用请求函数
- * 功能：发起 fetch 请求，自动设置 JSON 请求头，处理非 ok 响应并返回 JSON
+ * 功能：发起 fetch 请求，自动设置 JSON 请求头与本地令牌，处理非 ok 响应并返回 JSON
  * 实现方式：
  *   1. 若存在 body 且未显式指定 Content-Type，则默认 application/json
- *   2. 响应非 ok 时尝试解析错误信息并抛出 Error
- *   3. 空响应体（如 204）返回空对象，避免 JSON.parse 报错
+ *   2. 自动附加 x-local-token（Electron 生产模式）
+ *   3. 响应非 ok 时尝试解析错误信息并抛出 Error
+ *   4. 空响应体（如 204）返回空对象，避免 JSON.parse 报错
  * @param {string} path - 拼接在 BASE_URL 之后的路径，如 /inspirations
  * @param {object} options - 透传给 fetch 的配置项
  * @returns {Promise<any>} 后端返回的 JSON 数据
  */
-async function request(path, options = {}) {
+export async function request(path, options = {}) {
   const headers = { ...options.headers }
   // 存在请求体时自动设置 Content-Type 为 JSON
   if (options.body && !headers['Content-Type']) {
     headers['Content-Type'] = 'application/json'
+  }
+  // 附加本地 API 令牌（Electron 生产模式）
+  const token = await getLocalToken()
+  if (token) {
+    headers['x-local-token'] = token
   }
 
   const res = await fetch(`${BASE_URL}${path}`, { ...options, headers })
@@ -673,9 +694,10 @@ export async function askConversationStream(inspirationId, addendumId, data, { o
   // 异步执行流式读取；不 await，让调用方拿到 abort 控制器
   (async () => {
     try {
+      const token = await getLocalToken()
       const res = await fetch(`${BASE_URL}/inspirations/${inspirationId}/addenda/${addendumId}/conversation/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'x-local-token': token } : {}) },
         body: JSON.stringify(data),
         signal: controller.signal,
       });
@@ -738,7 +760,96 @@ export async function askConversationStream(inspirationId, addendumId, data, { o
   })();
 
   // 返回 abort 方法，调用方可中断流
-  return { abort: () => controller.abort() };
+  return { abort: () => controller.abort() }
+}
+
+/**
+ * 提问支路：阐释流式接口（SSE）
+ * 功能：向中立端点 /explain 发起 POST，逐帧解析 SSE，
+ *       delta 增量回调 onDelta，结束回调 onDone，出错回调 onError
+ * 实现方式：与 askConversationStream 完全一致的流式通道做法——
+ *   1. 用原生 fetch（不走 request 封装，因 request 会 await json()，不适合流）
+ *   2. 带本地令牌头 x-local-token
+ *   3. 拿到 response.body.getReader() 循环读取，按 \n\n 切帧，只取 data: 行
+ *   4. type==='delta' → onDelta(text)、'done' → onDone()、'error' → onError(msg)
+ *   5. 返回 { abort } 控制器，调用方可主动中断
+ * @param {{question: object, context: object, thread: Array}} data - 请求体
+ * @param {{onDelta?: (text: string) => void, onDone?: () => void, onError?: (err: string) => void}} handlers
+ * @returns {Promise<{abort: () => void}>}
+ */
+export async function explainStream(data, { onDelta, onDone, onError } = {}) {
+  const controller = new AbortController();
+
+  // 异步执行流式读取；不 await，让调用方立刻拿到 abort 控制器
+  (async () => {
+    try {
+      const token = await getLocalToken()
+      const res = await fetch(`${BASE_URL}/explain`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { 'x-local-token': token } : {}) },
+        body: JSON.stringify(data),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        // 非 2xx：尝试读取 error 字段回调 onError
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const errBody = await res.json();
+          errMsg = errBody.error || errBody.message || errMsg;
+        } catch {
+          // 非 JSON 错误保留默认信息
+        }
+        if (onError) onError(errMsg);
+        return;
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+
+      // 循环读取 chunk，按 SSE 帧边界（\n\n）分割
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        // 按双换行切帧；最后一段可能不完整，留在 buffer 等下一轮
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() || '';
+
+        for (const frame of frames) {
+          // 每帧可能多行，只取 data: 开头的行
+          const dataLines = frame
+            .split('\n')
+            .filter((l) => l.startsWith('data:'))
+            .map((l) => l.slice(5).trimStart());
+          if (dataLines.length === 0) continue;
+          const jsonStr = dataLines.join('\n');
+          try {
+            const payload = JSON.parse(jsonStr);
+            if (payload.type === 'delta' && onDelta) {
+              onDelta(payload.text || '');
+            } else if (payload.type === 'done') {
+              if (onDone) onDone();
+            } else if (payload.type === 'error') {
+              if (onError) onError(payload.error || '未知错误');
+            }
+          } catch {
+            // 单帧 JSON 解析失败：跳过，不中断整个流
+            console.warn('[explainStream] skip bad frame:', jsonStr);
+          }
+        }
+      }
+    } catch (err) {
+      // AbortError 是主动中断，不算错误
+      if (err.name === 'AbortError') return;
+      if (onError) onError(err.message);
+    }
+  })();
+
+  // 返回 abort 方法，调用方可中断流
+  return { abort: () => controller.abort() }
 }
 
 /**
@@ -750,8 +861,10 @@ export async function askConversationStream(inspirationId, addendumId, data, { o
 export async function uploadAddendumImage(file) {
   const formData = new FormData()
   formData.append('image', file)
+  const token = await getLocalToken()
   const res = await fetch(`${BASE_URL}/addenda/upload-image`, {
     method: 'POST',
+    headers: token ? { 'x-local-token': token } : {},
     body: formData
   })
   if (!res.ok) {
@@ -781,8 +894,10 @@ export async function uploadAddendumImage(file) {
 export async function uploadAddendumFile(file) {
   const formData = new FormData()
   formData.append('file', file)
+  const token = await getLocalToken()
   const res = await fetch(`${BASE_URL}/addenda/upload-file`, {
     method: 'POST',
+    headers: token ? { 'x-local-token': token } : {},
     body: formData
   })
   // 非 ok 响应：尝试提取后端错误信息后抛出
@@ -818,8 +933,10 @@ export async function uploadInspirationFiles(inspirationId, files) {
   for (const file of files) {
     formData.append('files', file)
   }
+  const token = await getLocalToken()
   const res = await fetch(`${BASE_URL}/inspirations/${inspirationId}/files`, {
     method: 'POST',
+    headers: token ? { 'x-local-token': token } : {},
     body: formData
   })
   // 非 ok 响应：尝试提取后端错误信息后抛出
@@ -1019,4 +1136,42 @@ export default {
   reorderFolders,
   moveInspiration,
   reorderInspirations
+}
+
+// ========== 消化 API（C 方案） ==========
+
+/**
+ * 查询待消化内容数量
+ * @param {string} id - 灵感 ID
+ * @returns {Promise<{success: boolean, data: {total, addenda, chunks, replies}}>}
+ */
+export function getAssimilateStatus(id) {
+  return request(`/inspirations/${id}/assimilate/status`)
+}
+
+/**
+ * 触发 AI 消化分析
+ * @param {string} id - 灵感 ID
+ * @returns {Promise<{success: boolean, data: {revisions, materials, no_change, crystal, total_sources}}>}
+ */
+export function analyzeAssimilation(id) {
+  return request(`/inspirations/${id}/assimilate/analyze`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  })
+}
+
+/**
+ * 确认/拒绝消化提议
+ * @param {string} id - 灵感 ID
+ * @param {object} proposal - 完整提议对象（原样回传）
+ * @param {number[]} acceptedRevisions - 接受的改写索引列表
+ * @param {number[]} acceptedMaterials - 接受的材料索引列表
+ * @returns {Promise<{success: boolean, data: {file, assimilatedFields, evidenceCount, digestedCount}}>}
+ */
+export function confirmAssimilation(id, proposal, acceptedRevisions, acceptedMaterials) {
+  return request(`/inspirations/${id}/assimilate/confirm`, {
+    method: 'POST',
+    body: JSON.stringify({ proposal, acceptedRevisions, acceptedMaterials })
+  })
 }

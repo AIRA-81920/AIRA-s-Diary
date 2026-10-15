@@ -39,10 +39,39 @@ const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
 // v13：版本从 12 升到 13，embedding 多源加权
 //      inspiration_embeddings 新增 embedding_title / embedding_content 两列
 //      支撑召回按「标题 + 正文 + 指纹」三源加权合成相似度
-export const CURRENT_VERSION = 13;
+export const CURRENT_VERSION = 14;
 
 // 数据库单例（initDb 完成后赋值）
 export let db = null;
+
+// ========== 参数化查询薄封装（SEC-004/SEC-017 修复的统一入口） ==========
+// 功能：全仓收敛为一套 DB 访问范式，杜绝 db.exec 模板字符串拼接
+// 实现方式：prepare → bind → step/getAsObject → free（与 models 层既有正确范式一致）
+
+/**
+ * 执行查询并返回所有行（对象数组）
+ * @param {string} sql - 含 ? 占位符的 SQL
+ * @param {Array} [params=[]] - 绑定参数
+ * @returns {Array<Object>}
+ */
+export function all(sql, params = []) {
+  const stmt = db.prepare(sql);
+  try {
+    stmt.bind(params);
+    const rows = [];
+    while (stmt.step()) rows.push(stmt.getAsObject());
+    return rows;
+  } finally {
+    stmt.free();
+  }
+}
+
+/**
+ * 执行查询并返回第一行，无结果返回 null
+ */
+export function get(sql, params = []) {
+  return all(sql, params)[0] ?? null;
+}
 
 // 迁移定义：版本号 → 迁移 SQL 与名称
 // CURRENT_VERSION=2 时，迁移 v2 完成以下任务：
@@ -149,6 +178,13 @@ SELECT 1;
     name: 'v13_embedding_multi_source',
     // v13 SQL 部分仅记录版本号；实际 ALTER 由 migrateV13 函数处理（见 migrations/v13_embedding_multi_source.js）
     // 多源加权：inspiration_embeddings 新增 embedding_title / embedding_content 两列
+    sql: 'SELECT 1;'
+  },
+  {
+    version: 14,
+    name: 'v14_assimilate',
+    // v14 SQL 部分仅记录版本号；实际 ALTER 由 migrateV14 函数处理（见 migrations/v14_assimilate.js）
+    // 消化机制：inspiration_addenda / knowledge_chunks / saved_ai_replies 各加 digested_at 列
     sql: 'SELECT 1;'
   }
 ];
@@ -410,19 +446,42 @@ async function loadSqlJs() {
 }
 
 // 从磁盘读取已有数据库文件，返回 Uint8Array；文件不存在返回 null
+// 安全增强（CR-01）：主文件损坏（半写/截断）时自动回退最近的 .bak 备份，
+// 避免崩溃/断电造成的整库损坏直接成为唯一可用副本
 function readDbFile() {
   // getDbPath() 返回绝对路径（打包后由 env 注入，Web 开发由 paths 解析）
   const absPath = getDbPath();
   if (fs.existsSync(absPath)) {
     // 读取二进制文件并返回 Buffer，sql.js 可直接接受 Uint8Array
     const buffer = fs.readFileSync(absPath);
+    // 校验 SQLite 文件头（"SQLite format 3\0"）：损坏则回退备份
+    const header = buffer.subarray(0, 16).toString('latin1');
+    if (header !== 'SQLite format 3\0') {
+      const bakPath = `${absPath}.bak`;
+      console.error(`[DB] Database file is corrupted (bad header), falling back to backup: ${bakPath}`);
+      if (fs.existsSync(bakPath)) {
+        const bakBuffer = fs.readFileSync(bakPath);
+        if (bakBuffer.subarray(0, 16).toString('latin1') === 'SQLite format 3\0') {
+          // 用备份覆盖损坏的主文件（原损坏文件保留为 .corrupt 供人工排查）
+          try { fs.copyFileSync(absPath, `${absPath}.corrupt`); } catch (_) {}
+          fs.copyFileSync(bakPath, absPath);
+          console.log('[DB] Database restored from backup');
+          return new Uint8Array(bakBuffer);
+        }
+      }
+      console.error('[DB] No valid backup available; starting with a fresh database');
+      return null;
+    }
     return new Uint8Array(buffer);
   }
   return null;
 }
 
 // 将内存中的数据库导出并写回磁盘
-// 实现：db.export() 返回 Uint8Array → 转 Buffer → 写入文件
+// 安全增强（CR-01）：原子写 + 滚动备份
+//   1. 先写临时文件 db.tmp → fs.renameSync 原子替换目标（同盘 rename 原子，避免半写状态）
+//   2. 替换前把旧文件轮转为 db.bak（保留 1 份最近成功落盘的副本）
+//   3. 写临时文件失败时清理临时文件，绝不动主文件
 export function saveDb() {
   if (!db) {
     console.warn('[DB] saveDb called but db is not initialized');
@@ -434,9 +493,81 @@ export function saveDb() {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  // 导出为 Uint8Array 并写入
-  const data = db.export();
-  fs.writeFileSync(absPath, Buffer.from(data));
+  const tmpPath = `${absPath}.tmp`;
+  try {
+    // 导出为 Uint8Array 并写入临时文件
+    const data = db.export();
+    fs.writeFileSync(tmpPath, Buffer.from(data));
+    // 滚动备份：旧主文件（若存在且头合法）轮转为 .bak
+    if (fs.existsSync(absPath)) {
+      try {
+        fs.copyFileSync(absPath, `${absPath}.bak`);
+      } catch (bakErr) {
+        // 备份失败不阻断主写入，仅告警（保留 .bak 为旧备份也比不写强）
+        console.warn('[DB] Failed to rotate backup:', bakErr.message);
+      }
+    }
+    // 原子替换（Windows 下 renameSync 不能覆盖已存在文件，先删后改名）
+    try {
+      fs.renameSync(tmpPath, absPath);
+    } catch (renameErr) {
+      if (renameErr.code === 'EPERM' || renameErr.code === 'EEXIST') {
+        fs.rmSync(absPath, { force: true });
+        fs.renameSync(tmpPath, absPath);
+      } else {
+        throw renameErr;
+      }
+    }
+  } catch (err) {
+    // 落盘失败：清理临时文件，主文件保持原状
+    try { fs.rmSync(tmpPath, { force: true }); } catch (_) {}
+    console.error('[DB] saveDb failed:', err.message);
+    throw err;
+  }
+}
+
+// ========== 启动对账（CR-04） ==========
+// 功能：进程在后台任务（DISTILL/VISION）完成前退出时，库中会残留
+//       title_ai_generated/content_ai_generated = 3（提炼中）与 images_json 内 status='generating'，
+//       前端将永久显示加载态。启动时统一复位为失败态(2/failed)，用户可手动重试。
+export function reconcileStartupState() {
+  if (!db) return;
+  try {
+    const r1 = db.run(
+      `UPDATE inspirations SET title_ai_generated = 2, content_ai_generated = 2
+       WHERE title_ai_generated = 3 OR content_ai_generated = 3`
+    );
+    // 复位 vision 卡死的 generating 条目（逐行 JSON 处理）
+    const rows = all(
+      `SELECT id, images_json FROM inspiration_addenda
+       WHERE images_json LIKE '%"generating"%'`
+    );
+    let visionReset = 0;
+    for (const row of rows) {
+      try {
+        const images = JSON.parse(row.images_json || '[]');
+        if (!Array.isArray(images)) continue;
+        let changed = false;
+        for (const img of images) {
+          if (img && img.status === 'generating') {
+            img.status = 'failed';
+            img.error = '应用重启导致任务中断，请重试';
+            changed = true;
+          }
+        }
+        if (changed) {
+          db.run('UPDATE inspiration_addenda SET images_json = ? WHERE id = ?', [JSON.stringify(images), row.id]);
+          visionReset++;
+        }
+      } catch { /* 单行 JSON 损坏跳过 */ }
+    }
+    if (r1 || visionReset > 0) {
+      saveDb();
+      console.log(`[DB] Startup reconciliation: distill flags reset, ${visionReset} vision entries marked failed`);
+    }
+  } catch (err) {
+    console.warn('[DB] Startup reconciliation failed (non-fatal):', err.message);
+  }
 }
 
 // ========== app_meta 键值元数据工具函数 ==========
@@ -571,6 +702,12 @@ async function runAllMigrations(database) {
         const { migrateV13 } = await import('./migrations/v13_embedding_multi_source.js');
         migrateV13(database);
       }
+      // v14 特殊处理：消化机制
+      // inspiration_addenda / knowledge_chunks / saved_ai_replies 各加 digested_at
+      if (migration.version === 14) {
+        const { migrateV14 } = await import('./migrations/v14_assimilate.js');
+        migrateV14(database);
+      }
       // 记录迁移版本（使用参数绑定防止注入）
       database.run(
         'INSERT INTO __migrations (version, name, applied_at) VALUES (?, ?, ?)',
@@ -589,6 +726,7 @@ async function runAllMigrations(database) {
   } else {
     console.log(`[DB] Database up to date. Version: ${appliedVersion}`);
   }
+  return pendingMigrations.length;
 }
 
 // 初始化数据库：加载 wasm → 读取或新建数据库 → 应用 schema → 执行迁移
@@ -611,24 +749,16 @@ export async function initDb() {
   // 应用 schema（幂等，已存在的表不会被重复创建）
   applySchema(SQL, db);
 
-  // 执行迁移
-  await runAllMigrations(db);
+  // 执行迁移（返回本次实际执行的迁移数）
+  const appliedCount = await runAllMigrations(db);
 
-  // 若有迁移或新建数据库，立即持久化到磁盘
+  // 仅当新建数据库或本次有迁移执行时才落盘（CR-14：修复原"恒真"判断造成的每次启动全量写盘）
   if (!existingData) {
     saveDb();
     console.log('[DB] New database persisted to disk');
-  } else {
-    // 已有数据库但有迁移执行后也需保存（迁移可能修改了数据）
-    // 检查是否有 pending 迁移，有则保存
-    const result = db.exec('SELECT MAX(version) as max_version FROM __migrations');
-    if (result.length > 0 && result[0].values.length > 0) {
-      const maxVersion = result[0].values[0][0];
-      if (maxVersion >= CURRENT_VERSION) {
-        saveDb();
-        console.log('[DB] Database persisted after migrations');
-      }
-    }
+  } else if (appliedCount > 0) {
+    saveDb();
+    console.log('[DB] Database persisted after migrations');
   }
 
   return db;

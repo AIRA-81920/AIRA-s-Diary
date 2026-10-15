@@ -117,11 +117,11 @@ function AddendumSection({ inspirationId }) {
 
   return (
     <div
-      className="mt-6 mb-10 animate-fade-in-up"
+      className={`mt-6 animate-fade-in-up ${addenda.length > 0 ? 'mb-10' : 'mb-2'}`}
       style={{ animationDelay: '160ms' }}
     >
-      {/* 区块标题行 */}
-      <div className="flex items-center justify-between mb-4">
+      {/* 区块标题行（无内容时去掉底部间距，整行即为全部占位） */}
+      <div className={`flex items-center justify-between ${addenda.length > 0 ? 'mb-4' : ''}`}>
         <div className="flex items-center gap-2">
           <div className="h-px w-8 bg-veil/10" />
           <span className="text-ink/30 text-[11px] uppercase tracking-widest font-sans">
@@ -174,14 +174,8 @@ function AddendumSection({ inspirationId }) {
         </div>
       )}
 
-      {/* 空状态 */}
-      {!addendaLoading && addenda.length === 0 && (
-        <div className="text-center py-6">
-          <p className="text-ink/25 text-sm font-sans">
-            还没有追加思考。点击"追加"记录新的想法。
-          </p>
-        </div>
-      )}
+      {/* 空状态：无追加时不渲染任何占位内容，区块只保留紧凑标题行 */}
+      {/* （原"还没有追加思考"提示块已移除——无内容即不占空间） */}
 
       {/* 新建/编辑弹窗 */}
       {modalState && (

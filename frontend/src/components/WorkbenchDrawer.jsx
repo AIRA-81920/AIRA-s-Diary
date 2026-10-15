@@ -123,6 +123,7 @@ function WorkbenchDrawer() {
     // 抽屉主容器：K4-b 挤压式（与 Detail 并列），宽度过渡 400ms
     // fix5-4：挂载时 width=0，下一帧过渡到 drawerWidth，实现"从右滑入"动画
     <div
+      id="workbench-drawer"
       className={`insp-themed relative flex-shrink-0 overflow-hidden ${mounted ? 'animate-fade-in' : ''} ${dragging ? 'panel-transitioning' : ''}`}
       style={{
         // fix5-4：挂载前 width=0，挂载后 width=drawerWidth，触发 transition

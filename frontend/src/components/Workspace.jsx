@@ -20,6 +20,8 @@ import FolderEditModal from './FolderEditModal.jsx'
 import ResizablePanel from './ResizablePanel.jsx'
 import WorkbenchDrawer from './WorkbenchDrawer.jsx'
 import ConversationDrawer from './ConversationDrawer.jsx'
+// 提问支路：左侧浮窗（绝对定位包裹层，不影响布局）
+import AskBranchFloat from './AskBranchFloat.jsx'
 import ForceGraph from './ForceGraph.jsx'
 import ContinueThinkingPanel from './ContinueThinkingPanel.jsx'
 import SettingsPanel from './SettingsPanel.jsx'
@@ -164,6 +166,9 @@ function Workspace() {
         {drawer === 'conversation' && selectedInspiration && (
           <ConversationDrawer key={`conv-${selectedInspiration.id}-${conversationAddendumId}`} />
         )}
+
+        {/* 提问支路：左侧浮窗 + 毛玻璃（绝对定位包裹层，不影响 flex 布局） */}
+        <AskBranchFloat />
       </div>
 
       {/* 条件渲染：弹窗打开时显示 */}

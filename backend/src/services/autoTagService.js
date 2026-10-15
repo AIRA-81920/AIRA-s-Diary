@@ -78,9 +78,10 @@ export async function autoTag(inspirationId, inspirationData, crystal = null) {
     if (tags.length === 0) return [];
 
     // 更新 inspirations 表的 tags 字段（JSON 数组字符串）
+    // 参数化绑定（SEC-004 纵深防御：杜绝任何字符串拼接进 SQL）
     const tagsJson = JSON.stringify(tags);
     try {
-      db.run(`UPDATE inspirations SET tags = '${tagsJson.replace(/'/g, "''")}' WHERE id = '${inspirationId}'`);
+      db.run('UPDATE inspirations SET tags = ? WHERE id = ?', [tagsJson, inspirationId]);
       saveDb();
     } catch (dbErr) {
       console.warn('[autoTagService] Failed to update tags:', dbErr.message);

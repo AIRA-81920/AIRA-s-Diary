@@ -17,6 +17,8 @@ import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 // Electron 打包路径适配：数据根统一走 paths
 import { resolveDataInspirationsDir } from '../config/paths.js';
+// 安全加固（SEC-006）：id 白名单 + 路径前缀断言，杜绝 ../../ 任意目录创建/写入/删除
+import { assertUuid, safeJoin } from '../utils/security.js';
 
 // 默认面板收起状态：三面板布局初始均为展开
 // M3 重命名：clarifyCollapsed → crystallizeCollapsed
@@ -27,9 +29,11 @@ const DEFAULT_PANEL_STATE = {
 };
 
 // 返回指定灵感的存储文件夹路径
-// 实现：拼接 {数据根}/inspirations/{id}（数据根由 paths 统一解析，打包后指向 %APPDATA%）
+// 实现：UUID 白名单校验 → safeJoin 拼接 {数据根}/inspirations/{id}
+// 安全（SEC-006）：非 UUID id（如 ../../escape）直接抛 400，resolve 后强制断言仍在数据根之下
 export function getStoragePath(inspirationId) {
-  return path.join(resolveDataInspirationsDir(), inspirationId);
+  assertUuid(inspirationId, 'inspiration id');
+  return safeJoin(resolveDataInspirationsDir(), inspirationId);
 }
 
 // 初始化灵感存储
@@ -92,8 +96,9 @@ export async function getPanelState(inspirationId) {
 }
 
 // 删除整个灵感存储文件夹
-// 实现：fs.rm recursive + force，文件夹不存在时静默处理
+// 实现：UUID 白名单校验（校验失败直接抛 400，不允许静默吞掉）→ fs.rm recursive + force
 export async function removeStorage(inspirationId) {
+  // 先校验后删除（SEC-006）：非法 id 必须抛错，让调用方返回 400 而非假装成功
   const dir = getStoragePath(inspirationId);
   try {
     await fs.rm(dir, { recursive: true, force: true });
@@ -109,7 +114,7 @@ export async function removeStorage(inspirationId) {
 // 旧数据目录 clarify/ 由 db.js 迁移 v2 自动重命名为 crystallize/
 
 // 返回指定灵感的 crystallize 子目录路径
-// 实现：拼接 {DATA_DIR}/inspirations/{id}/crystallize
+// 实现：getStoragePath 已含 UUID 白名单 + safeJoin 双重校验，此处直接在其下拼接子目录
 function getCrystallizeDir(inspirationId) {
   return path.join(getStoragePath(inspirationId), 'crystallize');
 }
@@ -183,9 +188,11 @@ export async function getCrystallizeHistory(inspirationId) {
   return history;
 }
 
-// 更新最新结晶记录的 PRD（M3-a 保留 prd 字段名，M3-b 将改为 crystal）
-// 功能：读取最新文件 → 更新 prd 字段 → 写回文件
+// 更新最新结晶记录的 PRD / crystal
+// 功能：读取最新文件 → 同时更新 crystal（权威键）与 prd（旧读取方兼容）→ 写回文件
 // 实现：无最新文件时抛错（调用方应先确保有结晶记录）；写回时保留原文件名
+// 修复 0-1（内联编辑写入丢失）：读取侧（archiveService / 前端 store）优先读 crystal 键，
+//   因此写回时必须同时写 crystal 与 prd，否则用户编辑刷新后被旧 crystal 覆盖
 export async function updateCrystallizePRD(inspirationId, prd) {
   const files = await listCrystallizeFiles(inspirationId);
   if (files.length === 0) {
@@ -196,11 +203,43 @@ export async function updateCrystallizePRD(inspirationId, prd) {
   const filePath = path.join(dir, latestFile);
   const content = await fs.readFile(filePath, 'utf-8');
   const data = JSON.parse(content);
-  // 更新 prd 字段并记录更新时间
+  const now = new Date().toISOString();
+  // 同时写 crystal（权威键，值等于传入内容）与 prd（旧读取方兼容），并记录 crystal_updated_at
+  data.crystal = prd;
   data.prd = prd;
-  data.prd_updated_at = new Date().toISOString();
+  data.crystal_updated_at = now;
+  // 保留原有 prd_updated_at 行为（不强制，但保留以免旧读取方依赖断裂）
+  data.prd_updated_at = now;
   await fs.writeFile(filePath, JSON.stringify(data, null, 2), 'utf-8');
   return { file: latestFile, updated: true };
+}
+
+// 保存消化结果：写新版本 crystal 文件（不覆盖旧文件，保留版本历史）
+// 功能：读取最新 crystal → 应用用户确认的改写 + 挂载证据 → 写新文件
+// 实现：复用 saveCrystallizeResult 的文件名规则（timestamp_uuid），
+//   新文件额外记录 assimilated_from（来源内容 ID 列表）与 assimilated_fields（改了哪些字段）
+export async function saveAssimilation(inspirationId, { crystal, evidence, assimilatedFrom, assimilatedFields }) {
+  // 读取最新 crystal 文件作为基底（保留 stage / concept_map / 等已有字段）
+  const latest = await getCrystallizeLatest(inspirationId);
+  if (!latest) {
+    throw new Error(`No crystallize result found for inspiration ${inspirationId}`);
+  }
+  // 构建新版本内容：旧基底 → 更新 crystal → 追加 evidence → 记录消化来源
+  const now = new Date().toISOString();
+  const newContent = {
+    ...latest,                           // 保留 stage / concept_map / inspiration_type / crystal_type 等
+    crystal: crystal || latest.crystal,   // 用户确认改写后的新 crystal（拒绝的条目不改）
+    prd: crystal || latest.crystal,       // 旧读取方兼容
+    evidence: evidence || latest.evidence || [],  // 材料性内容挂载到此处
+    assimilated_from: assimilatedFrom || [],       // 来源内容 ID 列表
+    assimilated_fields: assimilatedFields || [],   // 本次改了哪些 crystal 字段
+    assimilated_at: now,                          // 消化时间戳
+    crystal_updated_at: now,
+    prd_updated_at: now,
+    saved_at: now,
+    inspiration_id: inspirationId,
+  };
+  return await saveCrystallizeResult(inspirationId, newContent);
 }
 
 export default {
@@ -213,4 +252,5 @@ export default {
   getCrystallizeLatest,
   getCrystallizeHistory,
   updateCrystallizePRD,
+  saveAssimilation,
 };

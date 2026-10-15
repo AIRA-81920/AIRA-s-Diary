@@ -9,6 +9,9 @@ import inspirationStorage from '../services/inspirationStorage.js';
 import TaskQueue, { TASK_KINDS } from '../services/taskQueue.js';
 import { db, saveDb } from '../database/db.js';
 import { computeDistillMode } from '../services/distillService.js';
+// 安全加固（SEC-006/RT-02）：快照物理删除的 id 白名单校验
+// SEC-008 写入侧：source_files 的 filename 白名单
+import { assertUuid, isSafeUploadFilename } from '../utils/security.js';
 // Electron 打包路径适配：新建灵感源文件目录统一走 paths
 import { resolveNeoideaDir } from '../config/paths.js';
 
@@ -46,7 +49,7 @@ export async function list(req, res) {
     const total = Inspiration.count();
     res.json({ success: true, data, total });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -61,7 +64,7 @@ export async function get(req, res) {
     }
     res.json({ success: true, data: shapeInspiration(inspiration) });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -73,6 +76,15 @@ export async function create(req, res) {
   try {
     // 多模态扩展字段：source_files（文件元信息数组）、distill（是否后台提炼 title+content）
     const { title, content, source_type, source_url, metadata, source_files, distill } = req.body;
+    // 文件名白名单校验（SEC-008 写入侧）：source_files 中的 filename 必须是本服务上传返回的 UUID 名，
+    //   防止 ../../../ 路径在 distill 阶段被读出并外发 LLM
+    if (Array.isArray(source_files) && source_files.length > 0) {
+      for (const f of source_files) {
+        if (f && f.filename && !isSafeUploadFilename(f.filename)) {
+          return res.status(400).json({ success: false, error: `非法源文件名：${String(f.filename).slice(0, 80)}` });
+        }
+      }
+    }
     let inspiration = Inspiration.create({ title, content, source_type, source_url, metadata });
     // source_files 非空时序列化存入 source_files_json（供后续 distill 读取文件清单）
     if (Array.isArray(source_files) && source_files.length > 0) {
@@ -108,7 +120,7 @@ export async function create(req, res) {
     // 返回塑形对象（含 source_files/title_ai_generated/content_ai_generated）
     res.status(201).json({ success: true, data: shapeInspiration(inspiration) });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -128,6 +140,11 @@ export async function update(req, res) {
       updateData.source_files_json = JSON.stringify(updateData.source_files);
       delete updateData.source_files;
     }
+    // 输入白名单（RT-04）：PUT /:id 的 folder_id 必须为 UUID 或 null（系统字段 deleted_at 等
+    // 不在 Inspiration.update 的 allowedFields 内，天然被忽略）
+    if (updateData.folder_id !== undefined && updateData.folder_id !== null) {
+      assertUuid(updateData.folder_id, 'folder id');
+    }
     // Inspiration.update 的 allowedFields 已含 title_ai_generated/content_ai_generated（多模态扩展）
     const updated = Inspiration.update(inspirationId, updateData);
     // 仅当 title 或 content 内容变化时才触发指纹重算（ai_generated 翻转不触发，R1）
@@ -136,7 +153,7 @@ export async function update(req, res) {
     }
     res.json({ success: true, data: shapeInspiration(updated) });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -166,7 +183,7 @@ export async function triggerDistill(req, res) {
     TaskQueue.enqueue(TASK_KINDS.DISTILL, req.params.id);
     res.json({ success: true, data: { queued: true, mode } });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -181,7 +198,7 @@ export async function remove(req, res) {
     }
     res.json({ success: true, data: updated });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -196,7 +213,7 @@ export async function listSnapshots(req, res) {
     const data = Inspiration.listSnapshots({ limit: 100, offset: 0 });
     res.json({ success: true, data });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -209,18 +226,26 @@ export async function restoreSnapshot(req, res) {
     }
     res.json({ success: true, data: updated });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
 // 物理删除快照：数据库级联清理 + 删除灵感目录（不可恢复，需用户确认）
+// 安全加固（SEC-006/RT-02）：必须先确认 DB 行存在且为软删除状态，再执行物理删除；
+//   非法 id 直接 400（inspirationStorage.removeStorage 内含 UUID 白名单 + safeJoin 双保险）
 export async function purgeSnapshot(req, res) {
   try {
-    Inspiration.delete(req.params.id);
-    await inspirationStorage.removeStorage(req.params.id);
+    const { id } = req.params;
+    assertUuid(id, 'snapshot id');
+    const existing = Inspiration.getById(id);
+    if (!existing || !existing.deleted_at) {
+      return res.status(404).json({ success: false, error: '快照不存在' });
+    }
+    Inspiration.delete(id);
+    await inspirationStorage.removeStorage(id);
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.expose || e.status < 500 ? e.message : '服务器内部错误' });
   }
 }
 
@@ -232,7 +257,7 @@ export async function search(req, res) {
     const data = Inspiration.search(q);
     res.json({ success: true, data });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -240,10 +265,11 @@ export async function search(req, res) {
 // 实现：调用 inspirationStorage.initStorage，metadata 从 body 传入
 export async function initStorage(req, res) {
   try {
+    assertUuid(req.params.id, 'inspiration id');
     await inspirationStorage.initStorage(req.params.id, req.body || {});
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.expose || e.status < 500 ? e.message : '服务器内部错误' });
   }
 }
 
@@ -251,10 +277,11 @@ export async function initStorage(req, res) {
 // 实现：调用 inspirationStorage.savePanelState → 返回合并后的状态
 export async function savePanelState(req, res) {
   try {
+    assertUuid(req.params.id, 'inspiration id');
     const state = await inspirationStorage.savePanelState(req.params.id, req.body || {});
     res.json({ success: true, data: state });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.expose || e.status < 500 ? e.message : '服务器内部错误' });
   }
 }
 
@@ -262,10 +289,11 @@ export async function savePanelState(req, res) {
 // 实现：调用 inspirationStorage.getPanelState → 返回状态对象（不存在时返回默认值）
 export async function getPanelState(req, res) {
   try {
+    assertUuid(req.params.id, 'inspiration id');
     const state = await inspirationStorage.getPanelState(req.params.id);
     res.json({ success: true, data: state });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.expose || e.status < 500 ? e.message : '服务器内部错误' });
   }
 }
 
@@ -275,10 +303,14 @@ export async function getPanelState(req, res) {
 export async function moveToFolder(req, res) {
   try {
     const { folder_id, sort_order } = req.body || {};
+    // 输入白名单（RT-04/CR-19）：folder_id 必须为 UUID 或 null
+    if (folder_id !== null && folder_id !== undefined) {
+      assertUuid(folder_id, 'folder id');
+    }
     const updated = Inspiration.moveToFolder(req.params.id, folder_id ?? null, sort_order);
     res.json({ success: true, data: updated });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    res.status(e.status || 500).json({ success: false, error: e.expose || e.status < 500 ? e.message : '服务器内部错误' });
   }
 }
 
@@ -292,7 +324,7 @@ export async function reorder(req, res) {
     Inspiration.batchUpdateSortOrder(items);
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
@@ -357,6 +389,6 @@ export async function getFileContent(req, res) {
       },
     });
   } catch (e) {
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }

@@ -25,6 +25,8 @@ import { getTemperature } from '../config/modelConfig.js';
 import { LLM_LIMITS } from '../config/constants.js';
 // Electron 打包路径适配：上传目录统一走 paths
 import { resolveAddendaDir } from '../config/paths.js';
+// 安全加固（SEC-008）：上传文件名白名单 + 路径前缀断言
+import { isSafeUploadFilename, safeJoin } from '../utils/security.js';
 
 // 日志前缀（项目惯例：[ServiceName]）
 const LOG_PREFIX = '[VisionService]';
@@ -239,7 +241,14 @@ export const VisionService = {
       err.code = 'VISION_INVALID_INPUT';
       throw err;
     }
-    const imagePath = path.join(UPLOADS_ADDENDA_DIR, filename);
+    // 安全（SEC-008 读取侧）：仅允许本服务生成的 UUID 图片文件名 + 路径前缀断言，
+    //   杜绝 ../../../ 使服务器把任意本地文件读出并外发给 LLM 端点
+    if (!isSafeUploadFilename(filename)) {
+      const err = new Error(`unsafe image filename: ${String(filename).slice(0, 80)}`);
+      err.code = 'VISION_INVALID_INPUT';
+      throw err;
+    }
+    const imagePath = safeJoin(UPLOADS_ADDENDA_DIR, filename);
     console.log(`${LOG_PREFIX} describeForAddendum: addendumId=${addendumId}, file=${filename}, hasContext=${!!(context && (context.title || context.fingerprint))}`);
     return this.describeImage({ imagePath, context });
   },

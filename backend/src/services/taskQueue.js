@@ -88,6 +88,9 @@ export const TaskQueue = {
     const key = `${kind}|${inspirationId}`;
 
     // 单飞去重：同 (kind, inspirationId) 在途任务合并 payload，不入队
+    // CR-08 修复：inFlightKeys 在入队时即标记（原实现延迟到 _processNext 取出时才标记，
+    //   导致"排队中"的任务可被重复入队——"创建后立刻编辑"会触发两次 FINGERPRINT/LLM 调用）；
+    //   取出执行时不再重复 add，finally 统一 delete
     if (inFlightKeys.has(key)) {
       // 在队列中找到同 key 的待执行任务，合并 payload（最后者覆盖）
       const existingIdx = queue.findIndex(t => t.key === key);
@@ -98,7 +101,8 @@ export const TaskQueue = {
       return;
     }
 
-    // 入队
+    // 入队（同时标记在途，防止排队期间重复入队）
+    inFlightKeys.add(key);
     queue.push({ kind, inspirationId, payload, key, enqueuedAt: Date.now() });
     console.log(`[TaskQueue] enqueued ${kind} for ${inspirationId} (queue size: ${queue.length})`);
 
@@ -144,9 +148,7 @@ export const TaskQueue = {
     console.log(`[TaskQueue] processing ${task.kind} for ${task.inspirationId} (waited ${waitMs}ms)`);
 
     try {
-      // 标记在途
-      inFlightKeys.add(task.key);
-
+      // 已在 enqueue 时标记在途（CR-08），此处直接分发执行
       // 分发到对应 handler
       await this._dispatch(task);
 

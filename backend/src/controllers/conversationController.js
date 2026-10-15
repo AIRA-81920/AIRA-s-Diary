@@ -214,7 +214,7 @@ export async function ask(req, res) {
     res.json({ success: true, data: result });
   } catch (e) {
     console.error('[ConversationController] ask failed:', e.message);
-    res.status(500).json({ success: false, error: e.message });
+    console.error("[API] 内部错误:", e.message); res.status(500).json({ success: false, error: "服务器内部错误" });
   }
 }
 
